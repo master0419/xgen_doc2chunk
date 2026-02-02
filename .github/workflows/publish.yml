@@ -1,0 +1,90 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches:
+      - deploy
+    paths:
+      - 'pyproject.toml'  # Only when pyproject.toml changes
+  
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Force publish without version check'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version_changed: ${{ steps.check.outputs.changed }}
+      new_version: ${{ steps.check.outputs.version }}
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # To compare with previous commit
+      
+      - name: Check if version changed
+        id: check
+        run: |
+          # Current version
+          CURRENT_VERSION=$(grep -Po '(?<=^version = ")[^"]*' pyproject.toml)
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Check if previous commit exists
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            # Previous commit version
+            git show HEAD~1:pyproject.toml > /tmp/old_pyproject.toml 2>/dev/null || echo 'version = "0.0.0"' > /tmp/old_pyproject.toml
+            OLD_VERSION=$(grep -Po '(?<=^version = ")[^"]*' /tmp/old_pyproject.toml || echo "0.0.0")
+          else
+            # First commit - set previous version to 0.0.0
+            OLD_VERSION="0.0.0"
+            echo "First commit on this branch - treating as new version"
+          fi
+          echo "Previous version: $OLD_VERSION"
+          
+          # Compare versions
+          if [ "$CURRENT_VERSION" != "$OLD_VERSION" ]; then
+            echo "Version changed from $OLD_VERSION to $CURRENT_VERSION"
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "Version unchanged"
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  publish:
+    needs: check-version
+    if: needs.check-version.outputs.version_changed == 'true' || github.event.inputs.force_publish == 'true'
+    runs-on: ubuntu-latest
+    
+    permissions:
+      id-token: write  # For Trusted Publisher
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+      
+      - name: Build package
+        run: python -m build
+      
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No token needed with Trusted Publisher!
+      
+      - name: Summary
+        run: |
+          echo "✅ Published version ${{ needs.check-version.outputs.new_version }} to PyPI!"
