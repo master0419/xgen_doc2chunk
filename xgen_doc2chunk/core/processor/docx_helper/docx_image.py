@@ -1,13 +1,13 @@
 # xgen_doc2chunk/core/processor/docx_helper/docx_image.py
 """
-DOCX ?´ë?ì§€ ì¶”ì¶œ ? í‹¸ë¦¬í‹°
+DOCX Image Extraction Utilities
 
-DOCX ë¬¸ì„œ?ì„œ ?´ë?ì§€ë¥?ì¶”ì¶œ?˜ê³  ë¡œì»¬???€?¥í•©?ˆë‹¤.
-- extract_image_from_drawing: Drawing ?”ì†Œ?ì„œ ?´ë?ì§€ ì¶”ì¶œ
-- process_pict_element: ?ˆê±°??VML pict ?”ì†Œ ì²˜ë¦¬
+Extracts images from DOCX documents and saves them locally.
+- extract_image_from_drawing: Extract images from Drawing elements
+- process_pict_element: Process legacy VML pict elements
 
-Note: ???¨ìˆ˜?¤ì? DOCXImageProcessor??ë©”ì„œ?œë? ?¸ì¶œ?˜ëŠ” wrapper?…ë‹ˆ??
-      ?¤ì œ ë¡œì§?€ DOCXImageProcessor???µí•©?˜ì–´ ?ˆìŠµ?ˆë‹¤.
+Note: These functions are wrappers that call DOCXImageProcessor methods.
+      The actual logic is consolidated in DOCXImageProcessor.
 """
 import logging
 from typing import Optional, Set, Tuple, TYPE_CHECKING
@@ -30,25 +30,25 @@ def extract_image_from_drawing(
     image_processor: "ImageProcessor"
 ) -> Tuple[str, Optional[ElementType]]:
     """
-    Drawing?ì„œ ?´ë?ì§€ë¥?ì¶”ì¶œ?©ë‹ˆ??
+    Extract image from Drawing element.
 
     Args:
-        graphic_data: graphicData XML ?”ì†Œ
-        doc: python-docx Document ê°ì²´
-        processed_images: ì²˜ë¦¬???´ë?ì§€ ê²½ë¡œ ì§‘í•© (ì¤‘ë³µ ë°©ì?)
-        image_processor: ImageProcessor ?¸ìŠ¤?´ìŠ¤ (DOCXImageProcessor ê¶Œì¥)
+        graphic_data: graphicData XML element
+        doc: python-docx Document object
+        processed_images: Set of processed image paths (for deduplication)
+        image_processor: ImageProcessor instance (DOCXImageProcessor recommended)
 
     Returns:
-        (content, element_type) ?œí”Œ
+        (content, element_type) tuple
     """
-    # DOCXImageProcessor??ê²½ìš° ?µí•©??ë©”ì„œ???¬ìš©
+    # Use integrated method if DOCXImageProcessor
     if hasattr(image_processor, 'extract_from_drawing'):
         content, is_image = image_processor.extract_from_drawing(
             graphic_data, doc, processed_images
         )
         return (content, ElementType.IMAGE) if is_image else ("", None)
     
-    # Fallback: ê¸°ì¡´ ë¡œì§ (ImageProcessor ê¸°ë³¸ ?´ë˜?¤ì¸ ê²½ìš°)
+    # Fallback: Legacy logic (when using base ImageProcessor class)
     from docx.oxml.ns import qn
     from xgen_doc2chunk.core.processor.docx_helper.docx_constants import NAMESPACES
     
@@ -75,11 +75,11 @@ def extract_image_from_drawing(
                 if image_tag:
                     return f"\n{image_tag}\n", ElementType.IMAGE
 
-            return "[?´ë?ì§€]", ElementType.IMAGE
+            return "[Image]", ElementType.IMAGE
 
         except Exception as e:
             logger.warning(f"Error extracting image from relationship: {e}")
-            return "[?´ë?ì§€]", ElementType.IMAGE
+            return "[Image]", ElementType.IMAGE
 
     except Exception as e:
         logger.warning(f"Error extracting image from drawing: {e}")
@@ -93,33 +93,33 @@ def process_pict_element(
     image_processor: "ImageProcessor"
 ) -> str:
     """
-    ?ˆê±°??VML pict ?”ì†Œë¥?ì²˜ë¦¬?©ë‹ˆ??
+    Process legacy VML pict element.
 
     Args:
-        pict_elem: pict XML ?”ì†Œ
-        doc: python-docx Document ê°ì²´
-        processed_images: ì²˜ë¦¬???´ë?ì§€ ê²½ë¡œ ì§‘í•© (ì¤‘ë³µ ë°©ì?)
-        image_processor: ImageProcessor ?¸ìŠ¤?´ìŠ¤ (DOCXImageProcessor ê¶Œì¥)
+        pict_elem: pict XML element
+        doc: python-docx Document object
+        processed_images: Set of processed image paths (for deduplication)
+        image_processor: ImageProcessor instance (DOCXImageProcessor recommended)
 
     Returns:
-        ?´ë?ì§€ ë§ˆí¬??ë¬¸ì??
+        Image marker string
     """
-    # DOCXImageProcessor??ê²½ìš° ?µí•©??ë©”ì„œ???¬ìš©
+    # Use integrated method if DOCXImageProcessor
     if hasattr(image_processor, 'extract_from_pict'):
         return image_processor.extract_from_pict(pict_elem, doc, processed_images)
     
-    # Fallback: ê¸°ì¡´ ë¡œì§ (ImageProcessor ê¸°ë³¸ ?´ë˜?¤ì¸ ê²½ìš°)
+    # Fallback: Legacy logic (when using base ImageProcessor class)
     try:
         ns_v = 'urn:schemas-microsoft-com:vml'
         ns_r = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 
         imagedata = pict_elem.find('.//{%s}imagedata' % ns_v)
         if imagedata is None:
-            return "[?´ë?ì§€]"
+            return "[Image]"
 
         rId = imagedata.get('{%s}id' % ns_r)
         if not rId:
-            return "[?´ë?ì§€]"
+            return "[Image]"
 
         try:
             rel = doc.part.rels.get(rId)
@@ -131,7 +131,7 @@ def process_pict_element(
         except Exception:
             pass
 
-        return "[?´ë?ì§€]"
+        return "[Image]"
 
     except Exception as e:
         logger.warning(f"Error processing pict element: {e}")

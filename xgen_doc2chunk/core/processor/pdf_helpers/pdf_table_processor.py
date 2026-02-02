@@ -212,7 +212,7 @@ def find_and_insert_annotations(doc, tables: List[TableInfo]) -> List[TableInfo]
     Detection patterns:
     1. Rows starting with "Note)" etc. right after table
     2. Subheader rows inside table (e.g., (A), (B))
-    3. Footnote/endnote markers (?? *, ?? ?? etc.)
+    3. Footnote/endnote markers (*, **, †, ‡ etc.)
 
     Args:
         doc: PyMuPDF document object
