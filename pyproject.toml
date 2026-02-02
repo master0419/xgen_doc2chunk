@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xgen-doc2chunk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Convert raw documents into AI-understandable context with intelligent text extraction, table detection, and semantic chunking"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -86,11 +86,11 @@ Issues = "https://github.com/master0419/doc2chunk/issues"
 Changelog = "https://github.com/master0419/doc2chunk/releases"
 
 [tool.hatch.build.targets.wheel]
-packages = ["xgen-doc2chunk"]
+packages = ["xgen_doc2chunk"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "xgen-doc2chunk/",
+    "xgen_doc2chunk/",
     "README.md",
     "LICENSE",
     "pyproject.toml",
