@@ -41,7 +41,7 @@ from xgen_doc2chunk.core.processor.docx_helper.docx_chart_extractor import DOCXC
 if TYPE_CHECKING:
     from xgen_doc2chunk.core.document_processor import CurrentFile
 
-# docx_helper?�서 ?�요??것들 import
+# docx_helper
 from xgen_doc2chunk.core.processor.docx_helper import (
     # Constants
     ElementType,

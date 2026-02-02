@@ -295,7 +295,7 @@ class HWPImageProcessor(ImageProcessor):
 
         bindata_index = None
 
-        # Strategy 1: ?¤í”„??79 (HWP 5.0.3.x+ ?¤í™)
+        # Strategy 1: Offset 79 (HWP 5.0.3.x+ spec)
         if len(payload) >= 81:
             test_id = struct.unpack('<H', payload[79:81])[0]
             if 0 < test_id <= bin_data_list_len:
@@ -303,7 +303,7 @@ class HWPImageProcessor(ImageProcessor):
                 logger.debug(f"Found BinData index at offset 79: {bindata_index}")
                 return bindata_index
 
-        # Strategy 2: ?¤í”„??8 (êµ?ë²„ì „)
+        # Strategy 2: Offset 8 (older version)
         if len(payload) >= 10:
             test_id = struct.unpack('<H', payload[8:10])[0]
             if 0 < test_id <= bin_data_list_len:
@@ -311,7 +311,7 @@ class HWPImageProcessor(ImageProcessor):
                 logger.debug(f"Found BinData index at offset 8: {bindata_index}")
                 return bindata_index
 
-        # Strategy 3: ?¼ë°˜?ì¸ ?¤í”„???¤ìº”
+        # Strategy 3: General offset scan
         for offset in [4, 6, 10, 12, 14, 16, 18, 20, 40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80]:
             if len(payload) >= offset + 2:
                 test_id = struct.unpack('<H', payload[offset:offset+2])[0]
@@ -320,7 +320,7 @@ class HWPImageProcessor(ImageProcessor):
                     logger.debug(f"Found potential BinData index at offset {offset}: {bindata_index}")
                     return bindata_index
 
-        # Strategy 4: ë²”ìœ„ ??ì²?ë²ˆì§¸ non-zero 2ë°”ì´??ê°??¤ìº”
+        # Strategy 4: Scan for first non-zero 2-byte value in range
         for i in range(0, min(len(payload) - 1, 100), 2):
             test_id = struct.unpack('<H', payload[i:i+2])[0]
             if 0 < test_id <= bin_data_list_len:

@@ -115,8 +115,8 @@ class DOCHandler(BaseHandler):
         """
         Delegate RTF processing to RTFHandler.
 
-        DOC ?�일???�제로는 RTF ?�식??경우, RTFHandler???�임?�니??
-        RTFHandler.extract_text()??raw bytes�?받으므�?current_file??그�?�??�달?�니??
+        When a DOC file is actually in RTF format, delegate to RTFHandler.
+        RTFHandler.extract_text() receives raw bytes, so pass current_file as is.
 
         Args:
             rtf_doc: Pre-converted RTFDocument object (unused, for consistency)
@@ -135,7 +135,7 @@ class DOCHandler(BaseHandler):
             chart_processor=self._chart_processor
         )
 
-        # RTFHandler.extract_text()??current_file?�서 file_data�?직접 ?�어 처리
+        # RTFHandler.extract_text() reads file_data directly from current_file
         return rtf_handler.extract_text(current_file, extract_metadata=extract_metadata)
 
     def _extract_from_ole_obj(self, ole, current_file: "CurrentFile", extract_metadata: bool) -> str:
@@ -258,7 +258,7 @@ class DOCHandler(BaseHandler):
         return str(value).strip()
 
     def _extract_ole_images(self, ole: olefile.OleFileIO, processed_images: Set[str]) -> List[str]:
-        """OLE?�서 ?��?지 추출"""
+        """Extract images from OLE container."""
         images = []
         try:
             for entry in ole.listdir():
@@ -493,7 +493,7 @@ class DOCHandler(BaseHandler):
             # Text extraction attempt
             text_parts = []
 
-            # 1. Table ?�트림에???�스??조각 찾기 ?�도
+            # 1. Try to find text fragments in Table stream
             table_stream_name = None
             if ole.exists('1Table'):
                 table_stream_name = '1Table'
@@ -521,9 +521,9 @@ class DOCHandler(BaseHandler):
             # Find consecutive Unicode characters
             i = 0
             while i < len(data) - 1:
-                # ?�니코드 ?�스???�작??찾기 (printable 문자)
+                # Find start of Unicode text (printable characters)
                 if 0x20 <= data[i] <= 0x7E and data[i+1] == 0x00:
-                    # ?�니코드 문자???�집
+                    # Collect Unicode characters
                     unicode_bytes = []
                     j = i
                     while j < len(data) - 1:
