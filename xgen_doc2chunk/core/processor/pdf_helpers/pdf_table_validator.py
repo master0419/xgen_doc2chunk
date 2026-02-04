@@ -383,11 +383,11 @@ class TableQualityValidator:
         # if num_rows > 5 and col2_has_paragraphs >= 2:
         #     return False, f"col2_paragraphs({col2_has_paragraphs})"
         
-        # Pattern 3: If first column is short and second is long overall, likely body text not key-value
-        if num_rows > 10:
-            col1_short_ratio = (col1_empty_count + col1_short_count) / num_rows
-            if col1_short_ratio >= 0.8 and col2_long_count >= 5:
-                return False, f"asymmetric_cols(short1={col1_short_ratio:.0%}, long2={col2_long_count})"
+        # # Pattern 3: If first column is short and second is long overall, likely body text not key-value
+        # if num_rows > 10:
+        #     col1_short_ratio = (col1_empty_count + col1_short_count) / num_rows
+        #     if col1_short_ratio >= 0.8 and col2_long_count >= 5:
+        #         return False, f"asymmetric_cols(short1={col1_short_ratio:.0%}, long2={col2_long_count})"
         
         return True, "valid"
 
