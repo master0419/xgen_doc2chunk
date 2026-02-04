@@ -170,7 +170,7 @@ class TableQualityValidator:
         if paragraph_count > 0:
             # High probability of not being a table if paragraph-style text exists
             paragraph_ratio = paragraph_count / max(1, filled_cells)
-            if paragraph_ratio > 0.25:  # Relaxed from 15% to 25%
+            if paragraph_ratio > 0.60:  # Relaxed from 25% to 60%
                 return False, 0.0, f"contains_paragraph_text({paragraph_count})"
             elif paragraph_ratio > 0.1:  # Relaxed from 5% to 10%
                 penalties.append(f"has_paragraph_cells({paragraph_count})")
@@ -379,9 +379,9 @@ class TableQualityValidator:
             if col1_empty_ratio >= 0.6 and col2_long_ratio >= 0.3:
                 return False, f"col1_empty({col1_empty_ratio:.0%})_col2_long({col2_long_ratio:.0%})"
         
-        # Pattern 2: Many paragraph-style entries in second column
-        if num_rows > 5 and col2_has_paragraphs >= 2:
-            return False, f"col2_paragraphs({col2_has_paragraphs})"
+        # # Pattern 2: Many paragraph-style entries in second column
+        # if num_rows > 5 and col2_has_paragraphs >= 2:
+        #     return False, f"col2_paragraphs({col2_has_paragraphs})"
         
         # Pattern 3: If first column is short and second is long overall, likely body text not key-value
         if num_rows > 10:
