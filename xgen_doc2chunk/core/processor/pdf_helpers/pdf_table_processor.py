@@ -25,6 +25,9 @@ from xgen_doc2chunk.core.processor.pdf_helpers.pdf_utils import (
 )
 from xgen_doc2chunk.core.processor.pdf_helpers.pdf_table_detection import TableDetectionEngine
 from xgen_doc2chunk.core.processor.pdf_helpers.pdf_cell_analysis import CellAnalysisEngine
+from xgen_doc2chunk.core.processor.pdf_helpers.pdf_text_quality_analyzer import (
+    apply_cjk_compat_mapping,
+)
 
 logger = logging.getLogger("document-processor")
 
@@ -873,7 +876,12 @@ def generate_html_from_cells(
             content = ""
             if col_idx < len(row_data):
                 content = row_data[col_idx]
-            content = escape_html(str(content).strip() if content else "")
+            
+            # Apply CJK Compatibility character mapping to fix broken characters
+            # (e.g., 㛳→→, ㏙→(, ㏚→) etc. from Word→PDF conversion)
+            content = str(content).strip() if content else ""
+            content = apply_cjk_compat_mapping(content)
+            content = escape_html(content)
 
             # Get span info (default to 1 if not found)
             spans = span_map.get((row_idx, col_idx), {'rowspan': 1, 'colspan': 1})
