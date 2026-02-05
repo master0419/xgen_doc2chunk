@@ -8,12 +8,10 @@ object_detect를 통해 개별 객체(테이블)별로 청킹할 수 있습니�
 """
 
 import logging
-from typing import Optional, List, Tuple, Set
+from typing import Optional, List
 import xlrd
 
-from xgen_doc2chunk.core.processor.excel_helper.excel_layout_detector import (
-    layout_detect_range_xls, object_detect_xls, LayoutRange, _has_border_xls
-)
+from xgen_doc2chunk.core.processor.excel_helper.excel_layout_detector import layout_detect_range_xls, object_detect_xls, LayoutRange
 
 logger = logging.getLogger("document-processor")
 
@@ -332,212 +330,28 @@ def convert_xls_objects_to_tables(sheet, wb, layout: Optional[LayoutRange] = Non
     Returns:
         개별 객체 테이블 문자열 목록 (위→아래, 왼쪽→오른쪽 순서)
     """
-    # Get overall layout
-    if layout is None:
-        layout = layout_detect_range_xls(sheet)
-        if layout is None:
-            return []
+    objects = object_detect_xls(sheet, wb, layout)
     
-    # Detect bordered regions only (tables)
-    table_regions = object_detect_xls(sheet, wb, layout)
+    if not objects:
+        return []
     
-    if not table_regions:
-        # No bordered tables found - extract all values as plain text
-        plain_text = _extract_all_values_as_text_xls(sheet, layout)
-        return [plain_text] if plain_text else []
-    
-    results = []
-    processed_cells: Set[Tuple[int, int]] = set()
-    
-    for table_region in table_regions:
-        parts = []
-        
-        # 1. Extract context text above the table (title)
-        title_text = _extract_context_above_xls(sheet, wb, table_region, layout, processed_cells)
-        if title_text:
-            parts.append(title_text)
-        
-        # 2. Convert bordered region to table
-        table_str = convert_xls_sheet_to_table(sheet, wb, table_region)
+    tables = []
+    for obj_layout in objects:
+        table_str = convert_xls_sheet_to_table(sheet, wb, obj_layout)
+        # 빈 테이블 필터링 (공백, 줄바꿈, 테이블 기호만 있는 경우 제외)
         if table_str and table_str.strip():
-            # Validate table has actual data
-            if _has_table_data_xls(table_str):
-                parts.append(table_str)
-                # Mark table cells as processed
-                _mark_region_processed_xls(table_region, processed_cells)
-        
-        # 3. Extract context text below the table (notes)
-        notes_text = _extract_context_below_xls(sheet, wb, table_region, layout, processed_cells)
-        if notes_text:
-            parts.append(notes_text)
-        
-        if parts:
-            results.append("\n\n".join(parts))
-    
-    # 4. Extract remaining value cells as plain text (not part of any table)
-    remaining_text = _extract_remaining_values_as_text_xls(sheet, layout, processed_cells)
-    if remaining_text:
-        results.append(remaining_text)
-    
-    logger.debug(f"Converted {len(results)} objects to tables with context (XLS)")
-    return results
-
-
-def _extract_context_above_xls(
-    sheet, wb, table_region: LayoutRange, layout: LayoutRange, 
-    processed_cells: Set[Tuple[int, int]]
-) -> Optional[str]:
-    """
-    Extract text from cells directly above the table (within 5 rows).
-    Used for table titles. Only non-bordered cells are included.
-    """
-    context_lines = []
-    
-    # Search up to 5 rows above the table
-    for row_offset in range(1, 6):
-        row_idx = table_region.min_row - row_offset
-        if row_idx < layout.min_row:
-            break
-        
-        row_text = []
-        has_value = False
-        
-        for col_idx in range(table_region.min_col, table_region.max_col + 1):
-            if (row_idx, col_idx) in processed_cells:
-                continue
+            # Markdown 테이블에서 실제 데이터가 있는지 확인
+            lines = [line.strip() for line in table_str.strip().split('\n') if line.strip()]
+            has_data = False
+            for line in lines:
+                if '---' not in line:
+                    parts = [p.strip() for p in line.split('|') if p.strip()]
+                    if parts:
+                        has_data = True
+                        break
             
-            try:
-                # XLS uses 0-based index
-                value = sheet.cell_value(row_idx - 1, col_idx - 1)
-                
-                # Only include if cell has NO border
-                if value and str(value).strip() and not _has_border_xls(sheet, wb, row_idx - 1, col_idx - 1):
-                    row_text.append(str(value).strip())
-                    processed_cells.add((row_idx, col_idx))
-                    has_value = True
-            except Exception:
-                pass
-        
-        if has_value and row_text:
-            context_lines.insert(0, " ".join(row_text))
-        elif not has_value:
-            # Stop if empty row found
-            break
+            if has_data:
+                tables.append(table_str)
     
-    return "\n".join(context_lines) if context_lines else None
-
-
-def _extract_context_below_xls(
-    sheet, wb, table_region: LayoutRange, layout: LayoutRange,
-    processed_cells: Set[Tuple[int, int]]
-) -> Optional[str]:
-    """
-    Extract text from cells directly below the table (within 5 rows).
-    Used for table notes/footnotes. Only non-bordered cells are included.
-    """
-    context_lines = []
-    
-    # Search up to 5 rows below the table
-    for row_offset in range(1, 6):
-        row_idx = table_region.max_row + row_offset
-        if row_idx > layout.max_row:
-            break
-        
-        row_text = []
-        has_value = False
-        
-        for col_idx in range(table_region.min_col, table_region.max_col + 1):
-            if (row_idx, col_idx) in processed_cells:
-                continue
-            
-            try:
-                # XLS uses 0-based index
-                value = sheet.cell_value(row_idx - 1, col_idx - 1)
-                
-                # Only include if cell has NO border
-                if value and str(value).strip() and not _has_border_xls(sheet, wb, row_idx - 1, col_idx - 1):
-                    row_text.append(str(value).strip())
-                    processed_cells.add((row_idx, col_idx))
-                    has_value = True
-            except Exception:
-                pass
-        
-        if has_value and row_text:
-            context_lines.append(" ".join(row_text))
-        elif not has_value:
-            # Stop if empty row found
-            break
-    
-    return "\n".join(context_lines) if context_lines else None
-
-
-def _extract_all_values_as_text_xls(sheet, layout: LayoutRange) -> Optional[str]:
-    """
-    Extract all value cells as plain text when no bordered tables exist.
-    """
-    lines = []
-    
-    for row_idx in range(layout.min_row, layout.max_row + 1):
-        row_values = []
-        for col_idx in range(layout.min_col, layout.max_col + 1):
-            try:
-                # XLS uses 0-based index
-                value = sheet.cell_value(row_idx - 1, col_idx - 1)
-                if value and str(value).strip():
-                    row_values.append(str(value).strip())
-            except Exception:
-                pass
-        
-        if row_values:
-            lines.append(" | ".join(row_values))
-    
-    return "\n".join(lines) if lines else None
-
-
-def _extract_remaining_values_as_text_xls(
-    sheet, layout: LayoutRange, processed_cells: Set[Tuple[int, int]]
-) -> Optional[str]:
-    """
-    Extract all remaining value cells as plain text.
-    These are standalone values not associated with any bordered table.
-    """
-    lines = []
-    
-    for row_idx in range(layout.min_row, layout.max_row + 1):
-        row_values = []
-        for col_idx in range(layout.min_col, layout.max_col + 1):
-            if (row_idx, col_idx) in processed_cells:
-                continue
-            
-            try:
-                # XLS uses 0-based index
-                value = sheet.cell_value(row_idx - 1, col_idx - 1)
-                if value and str(value).strip():
-                    row_values.append(str(value).strip())
-                    processed_cells.add((row_idx, col_idx))
-            except Exception:
-                pass
-        
-        if row_values:
-            lines.append(" | ".join(row_values))
-    
-    return "\n".join(lines) if lines else None
-
-
-def _mark_region_processed_xls(region: LayoutRange, processed_cells: Set[Tuple[int, int]]) -> None:
-    """Mark all cells in a region as processed."""
-    for row_idx in range(region.min_row, region.max_row + 1):
-        for col_idx in range(region.min_col, region.max_col + 1):
-            processed_cells.add((row_idx, col_idx))
-
-
-def _has_table_data_xls(table_str: str) -> bool:
-    """Check if table string has actual data (not just structure)."""
-    lines = [line.strip() for line in table_str.strip().split('\n') if line.strip()]
-    for line in lines:
-        # Skip separator lines
-        if '---' not in line:
-            parts = [p.strip() for p in line.split('|') if p.strip()]
-            if parts:
-                return True
-    return False
+    logger.debug(f"Converted {len(tables)} objects to tables (XLS)")
+    return tables

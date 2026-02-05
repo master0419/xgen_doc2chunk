@@ -653,9 +653,11 @@ class DocumentProcessor:
         # Use force_chunking to disable table protection if preserve_tables is False
         force_chunking = not preserve_tables
 
+        ext = file_extension.lower().lstrip('.') if file_extension else ""
+
         result = create_chunks(
             text=text,
-            file_extension=file_extension or "",
+            file_extension=ext,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             force_chunking=force_chunking,

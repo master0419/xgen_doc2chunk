@@ -264,91 +264,41 @@ def chunk_multi_sheet_content(
             # Skip empty sheets
             continue
 
-        # === Accumulate small segments into chunks based on chunk_size ===
-        # Buffer to accumulate content until chunk_size is reached
-        buffer_content = ""
-        buffer_has_content = False
-        
-        def flush_buffer():
-            """Flush buffer content to chunks if not empty"""
-            nonlocal buffer_content, buffer_has_content
-            if buffer_has_content and buffer_content.strip():
-                all_chunks.append(f"{context_prefix}\n{buffer_content.strip()}")
-                buffer_content = ""
-                buffer_has_content = False
-        
-        def add_to_buffer(content: str):
-            """Add content to buffer, flush if exceeds chunk_size"""
-            nonlocal buffer_content, buffer_has_content
-            content = content.strip()
-            if not content:
-                return
-            
-            # Calculate sizes
-            prefix_size = len(context_prefix) + 1  # +1 for newline
-            new_content_size = len(content)
-            current_buffer_size = len(buffer_content)
-            
-            # If adding this content would exceed chunk_size, flush first
-            if buffer_has_content:
-                total_size = prefix_size + current_buffer_size + 2 + new_content_size  # +2 for separator
-                if total_size > chunk_size:
-                    flush_buffer()
-            
-            # Add content to buffer
-            if buffer_has_content:
-                buffer_content += "\n\n" + content
-            else:
-                buffer_content = content
-                buffer_has_content = True
-
         # Process each segment
         for segment_type, segment_content in segments:
             if not segment_content.strip():
                 continue
 
             segment_size = len(segment_content)
-            prefix_size = len(context_prefix) + 1
 
             if segment_type == 'table':
-                # Check if table is large (needs splitting)
-                if prefix_size + segment_size > chunk_size:
-                    # Large table - flush buffer first, then split table
-                    flush_buffer()
+                # Table processing - NO overlap for tables
+                if segment_size + len(context_prefix) <= chunk_size:
+                    all_chunks.append(f"{context_prefix}\n{segment_content}")
+                else:
+                    # Large table: split with NO overlap (0 is passed, not chunk_overlap)
                     table_chunks = chunk_large_table_func(
                         segment_content, chunk_size, 0,  # NO overlap for tables
                         context_prefix=context_prefix
                     )
                     all_chunks.extend(table_chunks)
-                else:
-                    # Small table - add to buffer
-                    add_to_buffer(segment_content)
 
             elif segment_type in ('textbox', 'chart', 'image'):
-                # Protected blocks: never split internally
-                if prefix_size + segment_size > chunk_size:
-                    # Large protected block - flush buffer first, keep intact
-                    flush_buffer()
+                # Protected blocks: never split, keep as single chunk
+                if len(context_prefix) + segment_size > chunk_size:
+                    # Exceeds chunk size but keep intact (protected block)
                     logger.warning(f"{segment_type} block exceeds chunk_size, but keeping it intact")
-                    all_chunks.append(f"{context_prefix}\n{segment_content}")
-                else:
-                    # Small protected block - add to buffer
-                    add_to_buffer(segment_content)
+                all_chunks.append(f"{context_prefix}\n{segment_content}")
 
             else:
                 # Plain text
-                if prefix_size + segment_size > chunk_size:
-                    # Large text - flush buffer first, then split
-                    flush_buffer()
+                if len(context_prefix) + segment_size <= chunk_size:
+                    all_chunks.append(f"{context_prefix}\n{segment_content}")
+                else:
+                    # Split long plain text
                     text_chunks = chunk_plain_text_func(segment_content, chunk_size, chunk_overlap)
                     for chunk in text_chunks:
                         all_chunks.append(f"{context_prefix}\n{chunk}")
-                else:
-                    # Small text - add to buffer
-                    add_to_buffer(segment_content)
-        
-        # Flush remaining buffer content for this sheet
-        flush_buffer()
 
     logger.info(f"Multi-sheet content split into {len(all_chunks)} chunks")
 
@@ -437,28 +387,19 @@ def chunk_single_table_content(
 
         logger.debug(f"Processing {table_type} table: {table_size} chars")
 
-        # Excel files: Always attempt row-level splitting based on chunk_size
-        # (chunk_large_table_func preserves row integrity during splitting)
-        table_chunks = chunk_large_table_func(
-            table_content, chunk_size, 0,  # NO overlap for tables
-            context_prefix=context_prefix
-        )
-        all_chunks.extend(table_chunks)
-
-        # [PRESERVE TABLE AS ONE] - Use the commented code below to keep table intact without splitting
-        # if table_size + len(context_prefix) <= chunk_size:
-        #     # Small table: include with context
-        #     if context_prefix:
-        #         all_chunks.append(f"{context_prefix}\n\n{table_content}")
-        #     else:
-        #         all_chunks.append(table_content)
-        # else:
-        #     # Large table: split with NO overlap (context included in all chunks)
-        #     table_chunks = chunk_large_table_func(
-        #         table_content, chunk_size, 0,
-        #         context_prefix=context_prefix
-        #     )
-        #     all_chunks.extend(table_chunks)
+        if table_size + len(context_prefix) <= chunk_size:
+            # Small table: include with context
+            if context_prefix:
+                all_chunks.append(f"{context_prefix}\n\n{table_content}")
+            else:
+                all_chunks.append(table_content)
+        else:
+            # Large table: split with NO overlap (context included in all chunks)
+            table_chunks = chunk_large_table_func(
+                table_content, chunk_size, 0,  # NO overlap for tables
+                context_prefix=context_prefix
+            )
+            all_chunks.extend(table_chunks)
 
     logger.info(f"Single table content split into {len(all_chunks)} chunks")
 
