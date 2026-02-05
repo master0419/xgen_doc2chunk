@@ -273,15 +273,23 @@ def chunk_multi_sheet_content(
 
             if segment_type == 'table':
                 # Table processing - NO overlap for tables
-                if segment_size + len(context_prefix) <= chunk_size:
-                    all_chunks.append(f"{context_prefix}\n{segment_content}")
-                else:
-                    # Large table: split with NO overlap (0 is passed, not chunk_overlap)
-                    table_chunks = chunk_large_table_func(
-                        segment_content, chunk_size, 0,  # NO overlap for tables
-                        context_prefix=context_prefix
-                    )
-                    all_chunks.extend(table_chunks)
+                # Excel files: Always attempt row-level splitting based on chunk_size
+                # (chunk_large_table_func preserves row integrity during splitting)
+                table_chunks = chunk_large_table_func(
+                    segment_content, chunk_size, 0,  # NO overlap for tables
+                    context_prefix=context_prefix
+                )
+                all_chunks.extend(table_chunks)
+
+                # [PRESERVE TABLE AS ONE] - Use the commented code below to keep table intact without splitting
+                # if segment_size + len(context_prefix) <= chunk_size:
+                #     all_chunks.append(f"{context_prefix}\n{segment_content}")
+                # else:
+                #     table_chunks = chunk_large_table_func(
+                #         segment_content, chunk_size, 0,
+                #         context_prefix=context_prefix
+                #     )
+                #     all_chunks.extend(table_chunks)
 
             elif segment_type in ('textbox', 'chart', 'image'):
                 # Protected blocks: never split, keep as single chunk
@@ -387,19 +395,28 @@ def chunk_single_table_content(
 
         logger.debug(f"Processing {table_type} table: {table_size} chars")
 
-        if table_size + len(context_prefix) <= chunk_size:
-            # Small table: include with context
-            if context_prefix:
-                all_chunks.append(f"{context_prefix}\n\n{table_content}")
-            else:
-                all_chunks.append(table_content)
-        else:
-            # Large table: split with NO overlap (context included in all chunks)
-            table_chunks = chunk_large_table_func(
-                table_content, chunk_size, 0,  # NO overlap for tables
-                context_prefix=context_prefix
-            )
-            all_chunks.extend(table_chunks)
+        # Excel files: Always attempt row-level splitting based on chunk_size
+        # (chunk_large_table_func preserves row integrity during splitting)
+        table_chunks = chunk_large_table_func(
+            table_content, chunk_size, 0,  # NO overlap for tables
+            context_prefix=context_prefix
+        )
+        all_chunks.extend(table_chunks)
+
+        # [PRESERVE TABLE AS ONE] - Use the commented code below to keep table intact without splitting
+        # if table_size + len(context_prefix) <= chunk_size:
+        #     # Small table: include with context
+        #     if context_prefix:
+        #         all_chunks.append(f"{context_prefix}\n\n{table_content}")
+        #     else:
+        #         all_chunks.append(table_content)
+        # else:
+        #     # Large table: split with NO overlap (context included in all chunks)
+        #     table_chunks = chunk_large_table_func(
+        #         table_content, chunk_size, 0,
+        #         context_prefix=context_prefix
+        #     )
+        #     all_chunks.extend(table_chunks)
 
     logger.info(f"Single table content split into {len(all_chunks)} chunks")
 

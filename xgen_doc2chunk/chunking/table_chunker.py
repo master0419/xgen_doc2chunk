@@ -477,11 +477,12 @@ def chunk_large_table(
             return [f"{context_prefix}\n{table_html}"]
         return [table_html]
 
-    # No need to split if table fits in chunk_size
-    if len(table_html) + len(context_prefix) <= chunk_size:
-        if context_prefix:
-            return [f"{context_prefix}\n{table_html}"]
-        return [table_html]
+    # [PRESERVE TABLE AS ONE] - Use the commented code below to keep table intact without splitting
+    # For Excel files: Always attempt row-level splitting based on chunk_size
+    # if len(table_html) + len(context_prefix) <= chunk_size:
+    #     if context_prefix:
+    #         return [f"{context_prefix}\n{table_html}"]
+    #     return [table_html]
 
     # No need to split if no data rows
     if not parsed.data_rows:
@@ -783,11 +784,12 @@ def chunk_large_markdown_table(
             return [f"{context_prefix}\n{table_text}"]
         return [table_text]
 
-    # No need to split if table fits in chunk_size
-    if len(table_text) + len(context_prefix) <= chunk_size:
-        if context_prefix:
-            return [f"{context_prefix}\n{table_text}"]
-        return [table_text]
+    # [PRESERVE TABLE AS ONE] - Use the commented code below to keep table intact without splitting
+    # For Excel files: Always attempt row-level splitting based on chunk_size
+    # if len(table_text) + len(context_prefix) <= chunk_size:
+    #     if context_prefix:
+    #         return [f"{context_prefix}\n{table_text}"]
+    #     return [table_text]
 
     # No need to split if no data rows
     if not parsed.data_rows:
