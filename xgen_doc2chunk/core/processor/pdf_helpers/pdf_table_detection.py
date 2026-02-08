@@ -12,7 +12,7 @@ from typing import List, Dict, Optional, Tuple, Any, Set
 import fitz
 import pdfplumber
 
-from xgen_doc2chunk.core.processor.pdf_helpers.types import (
+from xgen_doc2chunk.core.processor.pdf_helpers.types import (TableQualityValidator
     PDFConfig,
     TableDetectionStrategy,
     GridInfo,
