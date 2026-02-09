@@ -53,12 +53,18 @@ def extract_text_blocks(
     """
     elements = []
 
-    # Analyze text quality
-    if use_quality_check:
+    # Determine whether to use full-page reconstruction/OCR fallback.
+    # When tables exist on the page, full-page OCR/reconstruction would
+    # re-extract text inside table regions as plain text, causing duplication.
+    # In that case, skip full-page fallback and use the regular dict-based
+    # extraction below, which already filters table regions block-by-block
+    # via is_inside_any_bbox() and can do per-block OCR for low quality blocks.
+    use_fullpage_fallback = use_quality_check and not table_bboxes
+
+    if use_fullpage_fallback:
         analyzer = TextQualityAnalyzer(page, page_num)
         page_analysis = analyzer.analyze_page()
 
-        # If quality is low, try text reconstruction first (before OCR)
         if page_analysis.quality_result.needs_ocr:
             quality_result = page_analysis.quality_result
             logger.info(
@@ -68,78 +74,50 @@ def extract_text_blocks(
                 f"CJK_Compat={quality_result.cjk_compat_count}, "
                 f"fragmented={quality_result.is_fragmented}"
             )
-            
+
             # Try reconstruction for fragmented text or CJK Compat issues
             if quality_result.is_fragmented or quality_result.cjk_compat_count > 0:
                 logger.info(
                     f"[PDF] Page {page_num + 1}: Attempting text reconstruction "
-                    f"(excluding {len(table_bboxes)} table regions)"
+                    f"(no tables on page)"
                 )
-                
-                # Exclude table regions from reconstruction to avoid duplication
+
                 reconstructor = FragmentedTextReconstructor(
-                    page, page_num, exclude_bboxes=table_bboxes
+                    page, page_num, exclude_bboxes=[]
                 )
-                
-                # Use section-based reconstruction for proper table positioning
-                if table_bboxes:
-                    sections = reconstructor.reconstruct_with_sections()
-                    
-                    if sections:
-                        result_elements = []
-                        for section in sections:
-                            # Apply CJK Compatibility character mapping
-                            cleaned_text = apply_cjk_compat_mapping(section['text'])
-                            
-                            if cleaned_text.strip():
-                                # Create element with proper Y position for sorting
-                                result_elements.append(PageElement(
-                                    element_type=ElementType.TEXT,
-                                    content=cleaned_text,
-                                    bbox=(0, section['y_start'], page.rect.width, section['y_end']),
-                                    page_num=page_num
-                                ))
-                        
-                        if result_elements:
-                            logger.info(
-                                f"[PDF] Page {page_num + 1}: Text reconstruction successful "
-                                f"({len(result_elements)} sections)"
-                            )
-                            return result_elements
-                else:
-                    # No tables - use simple reconstruction
-                    reconstructed_text = reconstructor.reconstruct()
-                    
-                    if reconstructed_text:
-                        cleaned_text = apply_cjk_compat_mapping(reconstructed_text)
-                        
-                        logger.info(
-                            f"[PDF] Page {page_num + 1}: Text reconstruction successful "
-                            f"({len(cleaned_text)} chars)"
-                        )
-                        
-                        return [PageElement(
-                            element_type=ElementType.TEXT,
-                            content=cleaned_text,
-                            bbox=(0, 0, page.rect.width, page.rect.height),
-                            page_num=page_num
-                        )]
-            
-            # Fall back to OCR if reconstruction not applicable
+                reconstructed_text = reconstructor.reconstruct()
+
+                if reconstructed_text:
+                    cleaned_text = apply_cjk_compat_mapping(reconstructed_text)
+
+                    logger.info(
+                        f"[PDF] Page {page_num + 1}: Text reconstruction successful "
+                        f"({len(cleaned_text)} chars)"
+                    )
+
+                    return [PageElement(
+                        element_type=ElementType.TEXT,
+                        content=cleaned_text,
+                        bbox=(0, 0, page.rect.width, page.rect.height),
+                        page_num=page_num
+                    )]
+
+            # Fall back to full-page OCR (safe since no tables on this page)
             logger.info(
-                f"[PDF] Page {page_num + 1}: Using OCR fallback"
+                f"[PDF] Page {page_num + 1}: Using OCR fallback (no tables)"
             )
 
             extractor = QualityAwareTextExtractor(page, page_num)
             ocr_text, _ = extractor.extract()
 
             if ocr_text.strip():
-                # Split OCR text into blocks
-                # Exclude table regions
                 ocr_blocks = split_ocr_text_to_blocks(ocr_text, page, table_bboxes)
                 return ocr_blocks
 
-    # Existing logic: regular text extraction
+    # Regular dict-based text extraction.
+    # This path handles table exclusion block-by-block: each text block
+    # is checked against table_bboxes and skipped if it overlaps.
+    # Low quality individual blocks get per-block OCR (not full-page OCR).
     page_dict = page.get_text("dict", sort=True)
 
     for block in page_dict.get("blocks", []):
