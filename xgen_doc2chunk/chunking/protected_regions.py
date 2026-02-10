@@ -9,6 +9,7 @@ Main Features:
 - Row-level chunking for tables with NO overlap
 - Support for dynamic tag patterns from processors (Image, Chart, Page, Slide, Metadata)
 - Protected regions NEVER overlap when splitting chunks
+- Support for nested tables (table inside table) with tag counting
 """
 import logging
 import re
@@ -23,6 +24,79 @@ from xgen_doc2chunk.chunking.constants import (
 )
 
 logger = logging.getLogger("document-processor")
+
+
+def find_nested_html_tables(text: str) -> List[Tuple[int, int]]:
+    """
+    Find HTML table regions including nested tables using tag counting.
+    
+    This function properly handles nested tables (table inside table) by counting
+    opening and closing tags to find the correct end position of each table.
+    
+    Algorithm:
+    1. Find each <table> opening tag
+    2. Count nested <table> tags (depth tracking)
+    3. Match corresponding </table> closing tags
+    4. Return complete table region (from outermost <table> to matching </table>)
+    
+    Args:
+        text: Text to search for HTML tables
+        
+    Returns:
+        List of (start, end) tuples for each complete table region
+    """
+    regions: List[Tuple[int, int]] = []
+    
+    # Pattern for opening and closing table tags
+    open_pattern = re.compile(r'<table[^>]*>', re.IGNORECASE)
+    close_pattern = re.compile(r'</table>', re.IGNORECASE)
+    
+    # Track positions we've already included in a table region
+    covered_positions: set = set()
+    
+    # Find all opening tags
+    for open_match in open_pattern.finditer(text):
+        start_pos = open_match.start()
+        
+        # Skip if this position is already inside a found table region
+        if start_pos in covered_positions:
+            continue
+        
+        # Start counting from after the opening tag
+        pos = open_match.end()
+        depth = 1  # We've seen one opening tag
+        
+        while depth > 0 and pos < len(text):
+            # Find next opening and closing tags
+            next_open = open_pattern.search(text, pos)
+            next_close = close_pattern.search(text, pos)
+            
+            if next_close is None:
+                # No more closing tags - malformed HTML, break
+                logger.warning(f"Malformed HTML table: no closing tag found for table starting at position {start_pos}")
+                break
+            
+            if next_open is not None and next_open.start() < next_close.start():
+                # Found nested table opening before closing
+                depth += 1
+                pos = next_open.end()
+            else:
+                # Found closing tag
+                depth -= 1
+                pos = next_close.end()
+        
+        if depth == 0:
+            # Successfully found complete table
+            end_pos = pos
+            regions.append((start_pos, end_pos))
+            
+            # Mark all positions in this region as covered
+            for p in range(start_pos, end_pos):
+                covered_positions.add(p)
+            
+            logger.debug(f"Found nested HTML table: positions {start_pos}-{end_pos}, size={end_pos - start_pos}")
+    
+    return regions
 
 
 def find_protected_regions(
@@ -65,9 +139,11 @@ def find_protected_regions(
     disable_table_protection = is_table_based or force_chunking
 
     # 1. HTML tables (row-level only when table protection disabled)
+    #    Use tag counting to properly handle nested tables (table inside table)
     if not disable_table_protection:
-        for match in re.finditer(HTML_TABLE_PATTERN, text, re.DOTALL | re.IGNORECASE):
-            regions.append((match.start(), match.end(), 'html_table'))
+        nested_table_regions = find_nested_html_tables(text)
+        for start, end in nested_table_regions:
+            regions.append((start, end, 'html_table'))
     # else: HTML tables allow row-level chunking (handled by chunk_large_table)
 
     # 2. Chart blocks - always protected (never split under any condition)
@@ -339,13 +415,14 @@ def split_with_protected_regions(
 
     # When force_chunking, directly scan for HTML tables
     # (to handle tables not registered in protected_regions)
+    # Use tag counting to properly handle nested tables
     html_table_regions = []
     markdown_table_regions = []
     
     if force_chunking:
-        # Scan for HTML tables
-        for match in re.finditer(HTML_TABLE_PATTERN, text, re.DOTALL | re.IGNORECASE):
-            t_start, t_end = match.start(), match.end()
+        # Scan for HTML tables using nested table detection
+        nested_tables = find_nested_html_tables(text)
+        for t_start, t_end in nested_tables:
             # Check if already in block_regions
             already_in_block = any(
                 bs <= t_start and be >= t_end
