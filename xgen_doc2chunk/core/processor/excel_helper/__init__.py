@@ -31,8 +31,11 @@ from xgen_doc2chunk.core.processor.excel_helper.excel_chart_extractor import (
 )
 
 # === Image Processor (replaces excel_image.py utility functions) ===
-from xgen_doc2chunk.core.processor.excel_helper.excel_image_processor import (
+from xgen_doc2chunk.core.processor.excel_helper.excel_image_processor_xlsx import (
     ExcelImageProcessor,
+)
+from xgen_doc2chunk.core.processor.excel_helper.excel_image_processor_xls import (
+    XLSImageProcessor,
 )
 
 # === Table XLSX ===
@@ -76,6 +79,7 @@ __all__ = [
     'ExcelChartExtractor',
     # Image Processor
     'ExcelImageProcessor',
+    'XLSImageProcessor',
     # Table XLSX
     'has_merged_cells_xlsx',
     'convert_xlsx_sheet_to_table',

@@ -42,8 +42,11 @@ from xgen_doc2chunk.core.processor.excel_helper.excel_metadata import (
     XLSXMetadataExtractor,
     XLSMetadataExtractor,
 )
-from xgen_doc2chunk.core.processor.excel_helper.excel_image_processor import (
+from xgen_doc2chunk.core.processor.excel_helper.excel_image_processor_xlsx import (
     ExcelImageProcessor,
+)
+from xgen_doc2chunk.core.processor.excel_helper.excel_image_processor_xls import (
+    XLSImageProcessor,
 )
 
 logger = logging.getLogger("document-processor")
@@ -88,8 +91,17 @@ class ExcelHandler(BaseHandler):
         return XLSXMetadataExtractor()
 
     def _create_format_image_processor(self):
-        """Create Excel-specific image processor."""
+        """Create Excel-specific image processor (XLSX)."""
         return ExcelImageProcessor(
+            directory_path=self._image_processor.config.directory_path,
+            tag_prefix=self._image_processor.config.tag_prefix,
+            tag_suffix=self._image_processor.config.tag_suffix,
+            storage_backend=self._image_processor.storage_backend,
+        )
+
+    def _create_xls_image_processor(self):
+        """Create XLS-specific image processor."""
+        return XLSImageProcessor(
             directory_path=self._image_processor.config.directory_path,
             tag_prefix=self._image_processor.config.tag_prefix,
             tag_suffix=self._image_processor.config.tag_suffix,
@@ -200,6 +212,7 @@ class ExcelHandler(BaseHandler):
             wb = preprocessed.clean_content  # TRUE SOURCE
 
             result_parts = []
+            stats = {"images": 0}
 
             if extract_metadata:
                 xls_extractor = self._get_xls_metadata_extractor()
@@ -207,11 +220,17 @@ class ExcelHandler(BaseHandler):
                 if metadata_str:
                     result_parts.append(metadata_str + "\n\n")
 
+            # Extract images grouped by sheet using XLSImageProcessor
+            xls_image_processor = self._create_xls_image_processor()
+            sheet_names = [wb.sheet_by_index(i).name for i in range(wb.nsheets)]
+            images_by_sheet = xls_image_processor.extract_images_by_sheet(file_path, sheet_names)
+
             for sheet_idx in range(wb.nsheets):
                 ws = wb.sheet_by_index(sheet_idx)
                 sheet_tag = self.create_sheet_tag(ws.name)
                 result_parts.append(f"\n{sheet_tag}\n")
 
+                # Process tables for this sheet
                 table_contents = convert_xls_objects_to_tables(ws, wb)
                 if table_contents:
                     for i, table_content in enumerate(table_contents, 1):
@@ -220,8 +239,17 @@ class ExcelHandler(BaseHandler):
                         else:
                             result_parts.append(f"\n{table_content}\n")
 
+                # Process images for this sheet
+                sheet_images = images_by_sheet.get(sheet_idx, [])
+                for idx, img_data in enumerate(sheet_images):
+                    if img_data:
+                        image_tag = xls_image_processor.save_image(img_data)
+                        if image_tag:
+                            result_parts.append(f"\n{image_tag}\n")
+                            stats["images"] += 1
+
             result = "".join(result_parts)
-            self.logger.info(f"XLS processing completed: {wb.nsheets} sheets")
+            self.logger.info(f"XLS processing completed: {wb.nsheets} sheets, {stats['images']} images")
             return result
 
         except Exception as e:
