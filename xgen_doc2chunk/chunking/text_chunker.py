@@ -289,7 +289,12 @@ def clean_chunks(
     page_tag_processor: Optional[Any] = None
 ) -> List[str]:
     """
-    Clean chunks: remove empty chunks and chunks with only page markers.
+    Clean chunks: remove empty chunks and merge page-marker-only chunks with next chunk.
+
+    When a chunk contains only a page marker (e.g., [Page Number: 8]), it means
+    the page content was merged into the previous chunk (typically a table).
+    Instead of discarding these markers, we prepend them to the next chunk
+    to preserve page number information.
 
     Args:
         chunks: List of chunks
@@ -298,7 +303,8 @@ def clean_chunks(
     Returns:
         Cleaned list of chunks
     """
-    cleaned_chunks = []
+    if not chunks:
+        return []
 
     # Build patterns from PageTagProcessor or use defaults
     if page_tag_processor is not None:
@@ -320,21 +326,45 @@ def clean_chunks(
             r"\[Slide Number:\s*\d+(\s*\(OCR\))?\]",
         ]
 
+    def is_page_marker_only(chunk: str) -> bool:
+        """Check if chunk contains only a page/slide marker."""
+        stripped = chunk.strip()
+        for pattern in page_marker_patterns:
+            if re.fullmatch(pattern, stripped):
+                return True
+        return False
+
+    # First pass: identify page-marker-only chunks and merge them forward
+    result = []
+    pending_markers = []  # Page markers to prepend to next non-empty chunk
+
     for chunk in chunks:
         if not chunk.strip():
             continue
 
-        # Check if chunk contains only page marker
-        is_page_marker_only = False
-        for pattern in page_marker_patterns:
-            if re.fullmatch(pattern, chunk.strip()):
-                is_page_marker_only = True
-                break
+        if is_page_marker_only(chunk):
+            # Store this marker to prepend to the next content chunk
+            pending_markers.append(chunk.strip())
+        else:
+            # This chunk has content
+            if pending_markers:
+                # Prepend any pending page markers to this chunk
+                markers_text = "\n\n".join(pending_markers)
+                chunk = markers_text + "\n\n" + chunk
+                pending_markers = []
+            result.append(chunk)
 
-        if not is_page_marker_only:
-            cleaned_chunks.append(chunk)
+    # Handle any remaining pending markers at the end
+    # Append them to the last chunk if possible
+    if pending_markers and result:
+        last_chunk = result[-1]
+        markers_text = "\n\n".join(pending_markers)
+        result[-1] = last_chunk + "\n\n" + markers_text
+    elif pending_markers:
+        # No previous chunks exist, just add the markers as a single chunk
+        result.append("\n\n".join(pending_markers))
 
-    return cleaned_chunks
+    return result
 
 
 def chunk_code_text(

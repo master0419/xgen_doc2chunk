@@ -174,7 +174,7 @@ class TableDetectionEngine:
         """Determine if header and data tables can be merged."""
         # Check Y gap
         y_gap = data.bbox[1] - header.bbox[3]
-        if y_gap < -5 or y_gap > 40:  # Allow slight overlap, max 40pt gap
+        if y_gap < -5 or y_gap > 10:  # Allow slight overlap, max 10pt gap
             return False
 
         # Check X range overlap
