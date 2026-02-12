@@ -1,8 +1,8 @@
 """
-XLSX 텍스트박스 추출 모듈
+XLSX 텍스트박스 및 도형 텍스트 추출 모듈
 
-XLSX 파일의 DrawingML에서 텍스트박스 내용을 추출합니다.
-텍스트박스는 xl/drawings/drawing*.xml에 <xdr:sp> 요소로 저장됩니다.
+XLSX 파일의 DrawingML에서 텍스트박스/도형 내용을 추출합니다.
+텍스트박스와 도형(직사각형, 원, 삼각형 등)은 xl/drawings/drawing*.xml에 <xdr:sp> 요소로 저장됩니다.
 """
 
 import os

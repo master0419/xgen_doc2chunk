@@ -16,9 +16,7 @@ from typing import List, Optional, Tuple
 from xgen_doc2chunk.chunking.constants import (
     HTML_TABLE_PATTERN,
     MARKDOWN_TABLE_PATTERN,
-    IMAGE_TAG_PATTERN,
     CHART_BLOCK_PATTERN,
-    TEXTBOX_BLOCK_PATTERN
 )
 
 logger = logging.getLogger("document-processor")
@@ -112,10 +110,8 @@ def extract_content_segments(
 
     Segment Types:
     - table: HTML table or Markdown table (including table markers)
-    - textbox: [textbox]...[/textbox] block
     - chart: [chart]...[/chart] block
-    - image: [image:...] tag
-    - text: Plain text
+    - text: Plain text (including image tags and textbox tags - protected from splitting by protected_regions)
 
     Args:
         content: Content to parse
@@ -140,9 +136,9 @@ def extract_content_segments(
         ('table', r'\[Table\s*\d+\]\s*\n(?:\|[^\n]*\|(?:\s*\n|$))+'),
         # Standalone Markdown table (starts with | and has --- separator, last row matches even without newline)
         ('table', r'(?:^|\n)(\|[^\n]*\|\s*\n\|[\s\-:]*\|[^\n]*(?:\n\|[^\n]*\|)*)'),
-        ('textbox', TEXTBOX_BLOCK_PATTERN),
         ('chart', chart_pat),
-        ('image', img_pat),
+        # Note: image tags and textbox tags are NOT extracted as separate segments
+        # They remain in plain text and are protected from splitting by protected_regions
     ]
 
     # Find all special block positions
@@ -253,7 +249,7 @@ def chunk_multi_sheet_content(
             content_after_marker = sheet_content[sheet_marker_match.end():].strip()
 
         # === Split sheet content into segments ===
-        # Segments: tables, textbox, chart, image blocks and plain text
+        # Segments: tables, chart blocks and plain text (images and textboxes stay in plain text)
         segments = extract_content_segments(
             content_after_marker,
             image_pattern=image_pattern,
@@ -283,7 +279,7 @@ def chunk_multi_sheet_content(
                     )
                     all_chunks.extend(table_chunks)
 
-            elif segment_type in ('textbox', 'chart', 'image'):
+            elif segment_type == 'chart':
                 # Protected blocks: never split, keep as single chunk
                 if len(context_prefix) + segment_size > chunk_size:
                     # Exceeds chunk size but keep intact (protected block)
