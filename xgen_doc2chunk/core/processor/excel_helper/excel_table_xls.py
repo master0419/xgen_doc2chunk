@@ -230,8 +230,8 @@ def convert_xls_sheet_to_html(sheet, wb, layout: Optional[LayoutRange] = None) -
                 # HTML 이스케이프
                 cell_value = _escape_html(cell_value)
 
-                # 첫 번째 행은 헤더로 처리
-                tag = "th" if row_idx == layout.min_row - 1 else "td"
+                # 모든 셀을 td로 처리 (헤더 구분 없음)
+                tag = "td"
 
                 # 병합 속성
                 attrs = []
