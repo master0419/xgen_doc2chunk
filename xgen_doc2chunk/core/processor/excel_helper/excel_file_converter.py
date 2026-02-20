@@ -85,7 +85,8 @@ class XLSFileConverter(BaseFileConverter):
             xlrd.Book object
         """
         import xlrd
-        return xlrd.open_workbook(file_contents=file_data)
+        # formatting_info=True: 셀 서식(테두리, 색상 등) 정보를 읽기 위해 필수
+        return xlrd.open_workbook(file_contents=file_data, formatting_info=True)
     
     def get_format_name(self) -> str:
         """Return format name."""

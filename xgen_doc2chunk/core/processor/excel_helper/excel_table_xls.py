@@ -72,7 +72,7 @@ def convert_xls_sheet_to_table(sheet, wb, layout: Optional[LayoutRange] = None) 
     """
     # layout이 없으면 자동 감지
     if layout is None:
-        layout = layout_detect_range_xls(sheet)
+        layout = layout_detect_range_xls(sheet, wb)
         if layout is None:
             logger.debug("No data found in XLS sheet")
             return ""
@@ -101,7 +101,7 @@ def convert_xls_sheet_to_markdown(sheet, wb, layout: Optional[LayoutRange] = Non
     try:
         # layout이 없으면 자동 감지
         if layout is None:
-            layout = layout_detect_range_xls(sheet)
+            layout = layout_detect_range_xls(sheet, wb)
             if layout is None:
                 return ""
 
@@ -169,7 +169,7 @@ def convert_xls_sheet_to_html(sheet, wb, layout: Optional[LayoutRange] = None) -
     try:
         # layout이 없으면 자동 감지
         if layout is None:
-            layout = layout_detect_range_xls(sheet)
+            layout = layout_detect_range_xls(sheet, wb)
             if layout is None:
                 return ""
 

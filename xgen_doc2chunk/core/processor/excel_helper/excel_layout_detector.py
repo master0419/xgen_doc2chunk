@@ -72,9 +72,27 @@ class LayoutRange:
                     self.min_col > other.max_col)
 
 
+def _is_valid_cell_xlsx(cell) -> bool:
+    """
+    XLSX 셀이 유효한지 확인합니다 (데이터 또는 테두리가 있는 경우).
+    
+    Args:
+        cell: openpyxl Cell 객체
+    
+    Returns:
+        데이터 또는 테두리가 있으면 True
+    """
+    # 데이터가 있는 경우
+    if cell.value is not None and str(cell.value).strip():
+        return True
+    # 테두리가 있는 경우 (빈 셀이라도 표의 일부일 수 있음)
+    return _has_border_xlsx(cell)
+
+
 def layout_detect_range_xlsx(ws) -> Optional[LayoutRange]:
     """
-    XLSX 워크시트에서 실제 데이터가 있는 영역을 감지합니다.
+    XLSX 워크시트에서 실제 데이터 또는 테두리가 있는 영역을 감지합니다.
+    빈 셀이라도 테두리가 있으면 표의 일부로 인식합니다.
     
     Args:
         ws: openpyxl Worksheet 객체
@@ -94,11 +112,11 @@ def layout_detect_range_xlsx(ws) -> Optional[LayoutRange]:
         min_col = None
         max_col = None
         
-        # 왼쪽→오른쪽으로 첫 번째 데이터 열 찾기
+        # 왼쪽→오른쪽으로 첫 번째 유효 열 찾기 (데이터 또는 테두리)
         for col_idx in range(1, sheet_max_col + 1):
             for row_idx in range(1, sheet_max_row + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
-                if cell.value is not None and str(cell.value).strip():
+                if _is_valid_cell_xlsx(cell):
                     min_col = col_idx
                     break
             if min_col is not None:
@@ -107,11 +125,11 @@ def layout_detect_range_xlsx(ws) -> Optional[LayoutRange]:
         if min_col is None:
             return None
         
-        # 위→아래로 첫 번째 데이터 행 찾기
+        # 위→아래로 첫 번째 유효 행 찾기 (데이터 또는 테두리)
         for row_idx in range(1, sheet_max_row + 1):
             for col_idx in range(min_col, sheet_max_col + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
-                if cell.value is not None and str(cell.value).strip():
+                if _is_valid_cell_xlsx(cell):
                     min_row = row_idx
                     break
             if min_row is not None:
@@ -120,11 +138,11 @@ def layout_detect_range_xlsx(ws) -> Optional[LayoutRange]:
         if min_row is None:
             return None
         
-        # 오른쪽→왼쪽으로 마지막 데이터 열 찾기
+        # 오른쪽→왼쪽으로 마지막 유효 열 찾기 (데이터 또는 테두리)
         for col_idx in range(sheet_max_col, min_col - 1, -1):
             for row_idx in range(min_row, sheet_max_row + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
-                if cell.value is not None and str(cell.value).strip():
+                if _is_valid_cell_xlsx(cell):
                     max_col = col_idx
                     break
             if max_col is not None:
@@ -133,11 +151,11 @@ def layout_detect_range_xlsx(ws) -> Optional[LayoutRange]:
         if max_col is None:
             max_col = min_col
         
-        # 아래→위로 마지막 데이터 행 찾기
+        # 아래→위로 마지막 유효 행 찾기 (데이터 또는 테두리)
         for row_idx in range(sheet_max_row, min_row - 1, -1):
             for col_idx in range(min_col, max_col + 1):
                 cell = ws.cell(row=row_idx, column=col_idx)
-                if cell.value is not None and str(cell.value).strip():
+                if _is_valid_cell_xlsx(cell):
                     max_row = row_idx
                     break
             if max_row is not None:
@@ -155,12 +173,14 @@ def layout_detect_range_xlsx(ws) -> Optional[LayoutRange]:
         return None
 
 
-def layout_detect_range_xls(sheet) -> Optional[LayoutRange]:
+def layout_detect_range_xls(sheet, wb=None) -> Optional[LayoutRange]:
     """
-    XLS 시트에서 실제 데이터가 있는 영역을 감지합니다.
+    XLS 시트에서 실제 데이터 또는 테두리가 있는 영역을 감지합니다.
+    빈 셀이라도 테두리가 있으면 표의 일부로 인식합니다.
     
     Args:
         sheet: xlrd Sheet 객체
+        wb: xlrd Workbook 객체 (테두리 확인용, None이면 데이터만 확인)
     
     Returns:
         LayoutRange 객체 또는 데이터가 없으면 None
@@ -177,64 +197,60 @@ def layout_detect_range_xls(sheet) -> Optional[LayoutRange]:
         min_col = None
         max_col = None
         
-        # 왼쪽→오른쪽으로 첫 번째 데이터 열 찾기 (0-based)
-        for col_idx in range(sheet_max_col):
-            for row_idx in range(sheet_max_row):
+        # 셀 유효성 검사 함수 (데이터 또는 테두리)
+        def is_valid_cell(row_idx: int, col_idx: int) -> bool:
+            if wb is not None:
+                return _is_valid_cell_xls(sheet, wb, row_idx, col_idx)
+            else:
+                # wb가 없으면 데이터만 확인 (하위 호환성)
                 try:
                     value = sheet.cell_value(row_idx, col_idx)
-                    if value is not None and str(value).strip():
-                        min_col = col_idx + 1  # 1-based
-                        break
+                    return value is not None and str(value).strip() != ''
                 except Exception:
-                    pass
+                    return False
+        
+        # 왼쪽→오른쪽으로 첫 번째 유효 열 찾기 (0-based)
+        for col_idx in range(sheet_max_col):
+            for row_idx in range(sheet_max_row):
+                if is_valid_cell(row_idx, col_idx):
+                    min_col = col_idx + 1  # 1-based
+                    break
             if min_col is not None:
                 break
         
         if min_col is None:
             return None
         
-        # 위→아래로 첫 번째 데이터 행 찾기
+        # 위→아래로 첫 번째 유효(데이터 또는 테두리) 행 찾기
         for row_idx in range(sheet_max_row):
             for col_idx in range(min_col - 1, sheet_max_col):
-                try:
-                    value = sheet.cell_value(row_idx, col_idx)
-                    if value is not None and str(value).strip():
-                        min_row = row_idx + 1  # 1-based
-                        break
-                except Exception:
-                    pass
+                if is_valid_cell(row_idx, col_idx):
+                    min_row = row_idx + 1  # 1-based
+                    break
             if min_row is not None:
                 break
         
         if min_row is None:
             return None
         
-        # 오른쪽→왼쪽으로 마지막 데이터 열 찾기
+        # 오른쪽→왼쪽으로 마지막 유효(데이터 또는 테두리) 열 찾기
         for col_idx in range(sheet_max_col - 1, min_col - 2, -1):
             for row_idx in range(min_row - 1, sheet_max_row):
-                try:
-                    value = sheet.cell_value(row_idx, col_idx)
-                    if value is not None and str(value).strip():
-                        max_col = col_idx + 1  # 1-based
-                        break
-                except Exception:
-                    pass
+                if is_valid_cell(row_idx, col_idx):
+                    max_col = col_idx + 1  # 1-based
+                    break
             if max_col is not None:
                 break
         
         if max_col is None:
             max_col = min_col
         
-        # 아래→위로 마지막 데이터 행 찾기
+        # 아래→위로 마지막 유효(데이터 또는 테두리) 행 찾기
         for row_idx in range(sheet_max_row - 1, min_row - 2, -1):
             for col_idx in range(min_col - 1, max_col):
-                try:
-                    value = sheet.cell_value(row_idx, col_idx)
-                    if value is not None and str(value).strip():
-                        max_row = row_idx + 1  # 1-based
-                        break
-                except Exception:
-                    pass
+                if is_valid_cell(row_idx, col_idx):
+                    max_row = row_idx + 1  # 1-based
+                    break
             if max_row is not None:
                 break
         
@@ -548,6 +564,31 @@ def _has_border_xls(sheet, wb, row_idx: int, col_idx: int) -> bool:
         return False
 
 
+def _is_valid_cell_xls(sheet, wb, row_idx: int, col_idx: int) -> bool:
+    """
+    XLS 셀이 유효한지 확인합니다 (데이터 또는 테두리가 있는 경우).
+    0-based 인덱스를 사용합니다.
+    
+    Args:
+        sheet: xlrd Sheet 객체
+        wb: xlrd Workbook 객체
+        row_idx: 행 인덱스 (0-based)
+        col_idx: 열 인덱스 (0-based)
+    
+    Returns:
+        데이터 또는 테두리가 있으면 True
+    """
+    try:
+        # 데이터가 있는 경우
+        value = sheet.cell_value(row_idx, col_idx)
+        if value is not None and str(value).strip():
+            return True
+        # 테두리가 있는 경우 (빈 셀이라도 표의 일부일 수 있음)
+        return _has_border_xls(sheet, wb, row_idx, col_idx)
+    except Exception:
+        return False
+
+
 def _detect_bordered_regions_xls(sheet, wb, layout: LayoutRange) -> List[LayoutRange]:
     """
     XLS 시트에서 테두리가 있는 영역들을 감지합니다.
@@ -701,7 +742,7 @@ def object_detect_xls(sheet, wb, layout: Optional[LayoutRange] = None) -> List[L
     """
     try:
         if layout is None:
-            layout = layout_detect_range_xls(sheet)
+            layout = layout_detect_range_xls(sheet, wb)
             if layout is None:
                 return []
         
