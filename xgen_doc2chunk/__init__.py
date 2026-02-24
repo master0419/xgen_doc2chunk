@@ -23,7 +23,12 @@ Usage:
     result = processor.extract_chunks("document.pdf", chunk_size=1000)
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("xgen-doc2chunk")
+except PackageNotFoundError:
+    __version__ = "0.1.0"  # fallback for development
 
 # Expose core classes at top level
 from xgen_doc2chunk.core import DocumentProcessor
