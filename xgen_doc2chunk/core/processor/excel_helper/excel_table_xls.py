@@ -177,30 +177,59 @@ def convert_xls_sheet_to_html(sheet, wb, layout: Optional[LayoutRange] = None) -
         # xlrd에서 merged_cells는 (rlo, rhi, clo, chi) 튜플 리스트
         # rlo, clo는 0-based, rhi, chi는 exclusive
         merged_cells_info = {}  # (row, col) -> (rowspan, colspan), 0-based
+        merged_partial_info = {}  # layout 외부에서 시작하는 병합셀의 layout 내부 앵커 → (actual_rowspan, actual_colspan)
+        merged_value_override = {}  # layout 외부 앵커 값을 layout 내부 가상 앵커에 저장
         skip_cells = set()  # 건너뛸 셀 (병합된 영역의 일부), 0-based
 
         for (rlo, rhi, clo, chi) in sheet.merged_cells:
             # layout 영역과 겹치는 병합 셀만 처리 (1-based로 변환하여 비교)
             mr_min_row = rlo + 1
-            mr_max_row = rhi  # exclusive
+            mr_max_row = rhi  # exclusive in 0-based → 1-based max row
             mr_min_col = clo + 1
-            mr_max_col = chi  # exclusive
+            mr_max_col = chi  # exclusive in 0-based → 1-based max col
             
             if (mr_min_row <= layout.max_row and
                 mr_max_row >= layout.min_row and
                 mr_min_col <= layout.max_col and
                 mr_max_col >= layout.min_col):
                 
-                rowspan = rhi - rlo
-                colspan = chi - clo
+                # 병합 시작점이 layout 내부인지 확인 (0-based 비교)
+                start_in_layout = (rlo >= layout.min_row - 1 and clo >= layout.min_col - 1)
 
-                merged_cells_info[(rlo, clo)] = (rowspan, colspan)
+                if start_in_layout:
+                    rowspan = rhi - rlo
+                    colspan = chi - clo
+                    merged_cells_info[(rlo, clo)] = (rowspan, colspan)
 
-                # 병합된 영역의 나머지 셀들은 건너뛰기
-                for r in range(rlo, rhi):
-                    for c in range(clo, chi):
-                        if r != rlo or c != clo:
-                            skip_cells.add((r, c))
+                    # 병합된 영역의 나머지 셀들은 건너뛰기
+                    for r in range(rlo, rhi):
+                        for c in range(clo, chi):
+                            if r != rlo or c != clo:
+                                skip_cells.add((r, c))
+                else:
+                    # 병합 시작점이 layout 외부인 경우: 가상 앵커로 처리
+                    first_row_in_layout = max(rlo, layout.min_row - 1)
+                    first_col_in_layout = max(clo, layout.min_col - 1)
+
+                    actual_rowspan = min(rhi, layout.max_row) - first_row_in_layout
+                    actual_colspan = min(chi, layout.max_col) - first_col_in_layout
+
+                    merged_partial_info[(first_row_in_layout, first_col_in_layout)] = (actual_rowspan, actual_colspan)
+
+                    # 원래 앵커(layout 외부)의 값을 읽어서 가상 앵커에 저장
+                    try:
+                        orig_value = sheet.cell_value(rlo, clo)
+                        if orig_value:
+                            orig_type = sheet.cell_type(rlo, clo)
+                            merged_value_override[(first_row_in_layout, first_col_in_layout)] = _format_xls_cell_value(orig_value, orig_type, wb)
+                    except Exception:
+                        pass
+
+                    # layout 내부의 병합 영역에서 가상 앵커를 제외하고 건너뛰기
+                    for r in range(first_row_in_layout, min(rhi, layout.max_row)):
+                        for c in range(first_col_in_layout, min(chi, layout.max_col)):
+                            if r != first_row_in_layout or c != first_col_in_layout:
+                                skip_cells.add((r, c))
 
         # HTML 생성
         html_parts = ["<table border='1'>"]
@@ -227,6 +256,12 @@ def convert_xls_sheet_to_html(sheet, wb, layout: Optional[LayoutRange] = None) -
                 except Exception:
                     pass
 
+                # layout 외부에서 시작하는 병합셀의 가상 앵커: 원본 앵커의 값 사용
+                if (row_idx, col_idx) in merged_value_override:
+                    cell_value = merged_value_override[(row_idx, col_idx)]
+                    if cell_value:
+                        has_data = True
+
                 # HTML 이스케이프
                 cell_value = _escape_html(cell_value)
 
@@ -237,6 +272,12 @@ def convert_xls_sheet_to_html(sheet, wb, layout: Optional[LayoutRange] = None) -
                 attrs = []
                 if (row_idx, col_idx) in merged_cells_info:
                     rowspan, colspan = merged_cells_info[(row_idx, col_idx)]
+                    if rowspan > 1:
+                        attrs.append(f"rowspan='{rowspan}'")
+                    if colspan > 1:
+                        attrs.append(f"colspan='{colspan}'")
+                elif (row_idx, col_idx) in merged_partial_info:
+                    rowspan, colspan = merged_partial_info[(row_idx, col_idx)]
                     if rowspan > 1:
                         attrs.append(f"rowspan='{rowspan}'")
                     if colspan > 1:

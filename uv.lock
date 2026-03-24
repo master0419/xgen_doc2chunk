@@ -2424,7 +2424,7 @@ wheels = [
 
 [[package]]
 name = "xgen-doc2chunk"
-version = "0.1.0"
+version = "0.2.22"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
