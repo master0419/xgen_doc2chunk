@@ -190,6 +190,8 @@ def convert_xlsx_sheet_to_html(ws, layout: Optional[LayoutRange] = None) -> str:
         skip_cells = set()  # 건너뛸 셀 (병합된 영역의 일부)
         # 병합 셀의 시작점이 layout 밖에 있는 경우, layout 내 첫 번째 셀에 값을 표시
         merged_value_override = {}  # (row, col) -> value
+        # 병합 셀의 시작점이 layout 밖에 있는 경우, layout 내 실제 colspan/rowspan 저장
+        merged_partial_info = {}  # (row, col) -> (rowspan, colspan)
 
         for merged_range in ws.merged_cells.ranges:
             mr_min_row, mr_min_col = merged_range.min_row, merged_range.min_col
@@ -218,19 +220,25 @@ def convert_xlsx_sheet_to_html(ws, layout: Optional[LayoutRange] = None) -> str:
                                 skip_cells.add((r, c))
                 else:
                     # 병합 셀의 시작점이 layout 밖에 있는 경우
+                    # layout 내에서 병합 영역의 첫 번째 셀 찾기
+                    first_row_in_layout = max(mr_min_row, layout.min_row)
+                    first_col_in_layout = max(mr_min_col, layout.min_col)
+
                     # layout 내 첫 번째 셀에 병합 셀의 값을 표시
                     merged_value = ws.cell(row=mr_min_row, column=mr_min_col).value
                     if merged_value is not None:
-                        # layout 내에서 병합 영역의 첫 번째 셀 찾기
-                        first_row_in_layout = max(mr_min_row, layout.min_row)
-                        first_col_in_layout = max(mr_min_col, layout.min_col)
                         merged_value_override[(first_row_in_layout, first_col_in_layout)] = merged_value
-                    
+
+                    # layout 안에서 이 병합 셀이 실제로 차지하는 크기(colspan/rowspan) 계산
+                    actual_colspan = min(mr_max_col, layout.max_col) - first_col_in_layout + 1
+                    actual_rowspan = min(mr_max_row, layout.max_row) - first_row_in_layout + 1
+                    merged_partial_info[(first_row_in_layout, first_col_in_layout)] = (actual_rowspan, actual_colspan)
+
                     # layout 내의 병합 영역 나머지 셀들은 건너뛰기
-                    for r in range(max(mr_min_row, layout.min_row), min(mr_max_row, layout.max_row) + 1):
-                        for c in range(max(mr_min_col, layout.min_col), min(mr_max_col, layout.max_col) + 1):
+                    for r in range(first_row_in_layout, min(mr_max_row, layout.max_row) + 1):
+                        for c in range(first_col_in_layout, min(mr_max_col, layout.max_col) + 1):
                             # 값을 표시할 첫 번째 셀은 skip하지 않음
-                            if (r, c) in merged_value_override:
+                            if r == first_row_in_layout and c == first_col_in_layout:
                                 continue
                             skip_cells.add((r, c))
 
@@ -269,6 +277,13 @@ def convert_xlsx_sheet_to_html(ws, layout: Optional[LayoutRange] = None) -> str:
                 attrs = []
                 if (row_idx, col_idx) in merged_cells_info:
                     rowspan, colspan = merged_cells_info[(row_idx, col_idx)]
+                    if rowspan > 1:
+                        attrs.append(f"rowspan='{rowspan}'")
+                    if colspan > 1:
+                        attrs.append(f"colspan='{colspan}'")
+                elif (row_idx, col_idx) in merged_partial_info:
+                    # 병합 시작점이 layout 밖에 있는 경우: layout 내 실제 크기 적용
+                    rowspan, colspan = merged_partial_info[(row_idx, col_idx)]
                     if rowspan > 1:
                         attrs.append(f"rowspan='{rowspan}'")
                     if colspan > 1:
