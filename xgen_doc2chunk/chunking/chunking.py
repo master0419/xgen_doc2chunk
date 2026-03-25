@@ -621,7 +621,12 @@ def _merge_small_chunks(
             current = current + "\n\n" + next_chunk
             i += 1
 
-        result.append(current)
+        # Backward merge: if still small after forward merge attempts
+        # (blocked by page boundary), merge into the previous chunk
+        if len(current) < threshold and result:
+            result[-1] = result[-1] + "\n\n" + current
+        else:
+            result.append(current)
         i += 1
 
     if len(result) < len(chunks):
