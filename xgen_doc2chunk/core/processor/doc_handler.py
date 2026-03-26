@@ -155,6 +155,11 @@ class DOCHandler(BaseHandler):
                 if metadata_str:
                     result_parts.append(metadata_str + "\n\n")
 
+            # Extract header/footer
+            header_text, footer_text = self._extract_ole_headers_footers(ole)
+            if header_text:
+                result_parts.append(f"[Header]\n{header_text}\n\n")
+
             page_tag = self.create_page_tag(1)
             result_parts.append(f"{page_tag}\n")
 
@@ -167,6 +172,9 @@ class DOCHandler(BaseHandler):
             images = self._extract_ole_images(ole, processed_images)
             for img_tag in images:
                 result_parts.append(img_tag)
+
+            if footer_text:
+                result_parts.append(f"\n[Footer]\n{footer_text}\n")
 
         except Exception as e:
             self.logger.error(f"OLE processing error: {e}")
@@ -197,6 +205,11 @@ class DOCHandler(BaseHandler):
                     if metadata_str:
                         result_parts.append(metadata_str + "\n\n")
 
+                # Extract header/footer
+                header_text, footer_text = self._extract_ole_headers_footers(ole)
+                if header_text:
+                    result_parts.append(f"[Header]\n{header_text}\n\n")
+
                 page_tag = self.create_page_tag(1)
                 result_parts.append(f"{page_tag}\n")
 
@@ -209,6 +222,9 @@ class DOCHandler(BaseHandler):
                 images = self._extract_ole_images(ole, processed_images)
                 for img_tag in images:
                     result_parts.append(img_tag)
+
+                if footer_text:
+                    result_parts.append(f"\n[Footer]\n{footer_text}\n")
 
         except Exception as e:
             self.logger.error(f"OLE processing error: {e}")
@@ -510,6 +526,240 @@ class DOCHandler(BaseHandler):
 
         except Exception as e:
             self.logger.warning(f"Error extracting OLE text: {e}")
+            return ""
+
+    def _extract_ole_headers_footers(self, ole: olefile.OleFileIO) -> tuple:
+        """
+        Extract header and footer text from OLE DOC using FIB character positions.
+
+        In Word binary format (BIFF8), the text stream is structured as:
+            [body text][footnotes][headers/footers][comments][endnotes][textboxes]
+
+        The FIB stores character counts for each section:
+            - ccpText (offset 0x4C, 4 bytes): body text length
+            - ccpFtn  (offset 0x50, 4 bytes): footnotes length
+            - ccpHdd  (offset 0x54, 4 bytes): headers/footers length
+
+        Header/footer text starts at position (ccpText + ccpFtn + 1) in the text stream.
+
+        Returns:
+            (header_text, footer_text) tuple
+        """
+        try:
+            if not ole.exists('WordDocument'):
+                return "", ""
+
+            word_data = ole.openstream('WordDocument').read()
+            if len(word_data) < 0x58:
+                return "", ""
+
+            magic = struct.unpack('<H', word_data[0:2])[0]
+            if magic not in (0xA5EC, 0xA5DC):
+                return "", ""
+
+            # Read FIB character position counts
+            ccp_text = struct.unpack('<I', word_data[0x4C:0x50])[0]
+            ccp_ftn = struct.unpack('<I', word_data[0x50:0x54])[0]
+            ccp_hdd = struct.unpack('<I', word_data[0x54:0x58])[0]
+
+            if ccp_hdd == 0:
+                return "", ""
+
+            # Determine if text is stored as Unicode (UTF-16LE) or compressed (CP1252)
+            # FIB flags at offset 0x0A: bit 0x0200 indicates 'complex' file
+            # For the text encoding, we check fComplex flag
+            # However, a simpler approach: try to read using the CLX/piece table
+            # For now, use heuristic: check if the text appears to be at double-byte positions
+
+            # Calculate the start of header/footer text in the character stream
+            hdd_start = ccp_text + ccp_ftn + 1  # +1 for separator character
+
+            # Try to extract header/footer text from piece table or direct stream
+            hdd_text = self._extract_ole_text_range(ole, word_data, hdd_start, ccp_hdd)
+
+            if not hdd_text or not hdd_text.strip():
+                return "", ""
+
+            # Word stores headers/footers in groups of 6 per section:
+            # [even-header, odd-header, even-footer, odd-footer, first-header, first-footer]
+            # Separated by \r (0x0D)
+            parts = hdd_text.split('\r')
+            parts = [p.strip() for p in parts]
+
+            headers = []
+            footers = []
+
+            # Extract from 6-part groups
+            for i in range(0, len(parts), 6):
+                group = parts[i:i+6]
+                # even-header (0), odd-header (1), first-header (4)
+                for idx in [1, 0, 4]:  # Prefer odd, then even, then first
+                    if idx < len(group) and group[idx]:
+                        if group[idx] not in headers:
+                            headers.append(group[idx])
+                        break
+                # even-footer (2), odd-footer (3), first-footer (5)
+                for idx in [3, 2, 5]:  # Prefer odd, then even, then first
+                    if idx < len(group) and group[idx]:
+                        if group[idx] not in footers:
+                            footers.append(group[idx])
+                        break
+
+            # If the grouping doesn't yield results, try simpler split
+            if not headers and not footers and parts:
+                # Treat all non-empty parts as mixed header/footer content
+                non_empty = [p for p in parts if p]
+                if len(non_empty) >= 2:
+                    headers = [non_empty[0]]
+                    footers = [non_empty[-1]]
+                elif len(non_empty) == 1:
+                    headers = [non_empty[0]]
+
+            header_text = '\n'.join(headers)
+            footer_text = '\n'.join(footers)
+            return header_text, footer_text
+
+        except Exception as e:
+            self.logger.debug(f"Error extracting OLE headers/footers: {e}")
+            return "", ""
+
+    def _extract_ole_text_range(self, ole: olefile.OleFileIO, word_data: bytes,
+                                char_start: int, char_count: int) -> str:
+        """
+        Extract a range of characters from the OLE text stream.
+
+        Word binary format can store text either as:
+        1. UTF-16LE (2 bytes per char) in the WordDocument stream
+        2. Compressed (1 byte per char, CP1252) with piece table mapping
+
+        This method attempts both approaches.
+        """
+        try:
+            # Method 1: Try reading from CLX piece table in Table stream
+            table_stream_name = None
+            if ole.exists('1Table'):
+                table_stream_name = '1Table'
+            elif ole.exists('0Table'):
+                table_stream_name = '0Table'
+
+            if table_stream_name:
+                table_data = ole.openstream(table_stream_name).read()
+                text = self._extract_from_piece_table(
+                    word_data, table_data, char_start, char_count
+                )
+                if text:
+                    return text
+
+            # Method 2: Heuristic - try direct byte offset
+            # In simple (non-complex) files, text starts after the FIB
+            # at byte offset char_start * 2 (UTF-16LE) from a base offset
+            # This is fragile but works for many files
+            byte_offset = 0x200 + char_start * 2  # Common base offset
+            byte_end = byte_offset + char_count * 2
+            if byte_end <= len(word_data):
+                try:
+                    text = word_data[byte_offset:byte_end].decode('utf-16-le', errors='ignore')
+                    text = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', text)
+                    if text.strip():
+                        return text.strip()
+                except Exception:
+                    pass
+
+            return ""
+        except Exception as e:
+            self.logger.debug(f"Error in text range extraction: {e}")
+            return ""
+
+    def _extract_from_piece_table(self, word_data: bytes, table_data: bytes,
+                                   char_start: int, char_count: int) -> str:
+        """
+        Extract text using the CLX piece table.
+
+        The piece table maps character positions to byte offsets in the stream.
+        """
+        try:
+            # Find the piece table in the table stream
+            # CLX starts with 0x02 byte followed by piece table size
+            clx_start = None
+            i = 0
+            while i < len(table_data) - 4:
+                if table_data[i] == 0x01:
+                    # Skip Grpprl (property run)
+                    cbGrpprl = struct.unpack('<H', table_data[i+1:i+3])[0]
+                    i += 3 + cbGrpprl
+                elif table_data[i] == 0x02:
+                    clx_start = i
+                    break
+                else:
+                    i += 1
+
+            if clx_start is None:
+                return ""
+
+            # Parse piece table
+            pcdt_size = struct.unpack('<I', table_data[clx_start+1:clx_start+5])[0]
+            pcdt_data = table_data[clx_start+5:clx_start+5+pcdt_size]
+
+            # Piece table: array of CP values followed by array of PCD entries
+            # Number of pieces = (pcdt_size - 4) / (4 + 8) → each piece has 4-byte CP + 8-byte PCD
+            # Actually: n+1 CPs (4 bytes each) + n PCDs (8 bytes each)
+            # pcdt_size = (n+1)*4 + n*8 = 4 + n*12
+            n_pieces = (pcdt_size - 4) // 12
+
+            if n_pieces <= 0:
+                return ""
+
+            # Read CPs (character positions)
+            cps = []
+            for j in range(n_pieces + 1):
+                cp = struct.unpack('<I', pcdt_data[j*4:(j+1)*4])[0]
+                cps.append(cp)
+
+            # Read PCDs (piece descriptors)
+            pcd_offset = (n_pieces + 1) * 4
+            pieces = []
+            for j in range(n_pieces):
+                pcd_data = pcdt_data[pcd_offset + j*8:pcd_offset + (j+1)*8]
+                if len(pcd_data) < 8:
+                    break
+                fc = struct.unpack('<I', pcd_data[2:6])[0]
+                is_compressed = bool(fc & 0x40000000)
+                fc = fc & 0x3FFFFFFF  # Clear compression flag
+                pieces.append((cps[j], cps[j+1], fc, is_compressed))
+
+            # Extract text for the target range
+            char_end = char_start + char_count
+            result_chars = []
+
+            for cp_start, cp_end, fc, is_compressed in pieces:
+                # Check overlap with target range
+                overlap_start = max(cp_start, char_start)
+                overlap_end = min(cp_end, char_end)
+
+                if overlap_start >= overlap_end:
+                    continue
+
+                # Calculate byte offset within the piece
+                piece_char_offset = overlap_start - cp_start
+                piece_char_count = overlap_end - overlap_start
+
+                if is_compressed:
+                    byte_offset = fc // 2 + piece_char_offset
+                    raw = word_data[byte_offset:byte_offset + piece_char_count]
+                    text = raw.decode('cp1252', errors='ignore')
+                else:
+                    byte_offset = fc + piece_char_offset * 2
+                    raw = word_data[byte_offset:byte_offset + piece_char_count * 2]
+                    text = raw.decode('utf-16-le', errors='ignore')
+
+                result_chars.append(text)
+
+            result = ''.join(result_chars)
+            result = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', result)
+            return result.strip()
+
+        except Exception as e:
+            self.logger.debug(f"Piece table extraction error: {e}")
             return ""
 
     def _extract_text_from_word_stream(self, data: bytes) -> str:

@@ -276,6 +276,13 @@ class DOCXHandler(BaseHandler):
                     result_parts.append(metadata_str + "\n\n")
                     self.logger.info(f"DOCX metadata extracted")
 
+            # Extract header/footer content from sections
+            header_text, footer_text = self._extract_headers_footers(doc)
+
+            # Output header if present
+            if header_text:
+                result_parts.append(f"[Header]\n{header_text}\n\n")
+
             # Start page 1
             page_tag = self.create_page_tag(current_page)
             result_parts.append(f"{page_tag}\n")
@@ -315,6 +322,10 @@ class DOCXHandler(BaseHandler):
                 elif local_tag == 'sectPr':
                     continue
 
+            # Output footer if present
+            if footer_text:
+                result_parts.append(f"\n[Footer]\n{footer_text}\n")
+
             result = "".join(result_parts)
             self.logger.info(f"Enhanced DOCX processing completed: {current_page} pages, "
                            f"{total_tables} tables, {total_images} images, {total_charts} charts")
@@ -325,6 +336,88 @@ class DOCXHandler(BaseHandler):
             self.logger.error(f"Error in enhanced DOCX processing: {e}")
             self.logger.debug(traceback.format_exc())
             return self._extract_docx_simple_text(current_file)
+
+    def _extract_headers_footers(self, doc: Document) -> tuple:
+        """
+        Extract unique header and footer text from all sections.
+
+        python-docx provides header/footer via doc.sections[i].header/footer.
+        Each has .paragraphs and .tables like the document body.
+
+        Returns:
+            (header_text, footer_text) tuple — each is a string or empty string
+        """
+        header_texts = []
+        footer_texts = []
+        seen_headers: Set[str] = set()
+        seen_footers: Set[str] = set()
+
+        for section in doc.sections:
+            # Extract header
+            try:
+                header = section.header
+                if header and not header.is_linked_to_previous:
+                    h_text = self._extract_header_footer_content(header)
+                    if h_text and h_text not in seen_headers:
+                        seen_headers.add(h_text)
+                        header_texts.append(h_text)
+                elif header and header.is_linked_to_previous and not seen_headers:
+                    # First section with linked header — still extract it
+                    h_text = self._extract_header_footer_content(header)
+                    if h_text and h_text not in seen_headers:
+                        seen_headers.add(h_text)
+                        header_texts.append(h_text)
+            except Exception as e:
+                self.logger.debug(f"Error extracting header: {e}")
+
+            # Extract footer
+            try:
+                footer = section.footer
+                if footer and not footer.is_linked_to_previous:
+                    f_text = self._extract_header_footer_content(footer)
+                    if f_text and f_text not in seen_footers:
+                        seen_footers.add(f_text)
+                        footer_texts.append(f_text)
+                elif footer and footer.is_linked_to_previous and not seen_footers:
+                    f_text = self._extract_header_footer_content(footer)
+                    if f_text and f_text not in seen_footers:
+                        seen_footers.add(f_text)
+                        footer_texts.append(f_text)
+            except Exception as e:
+                self.logger.debug(f"Error extracting footer: {e}")
+
+        header_result = '\n'.join(header_texts)
+        footer_result = '\n'.join(footer_texts)
+        return header_result, footer_result
+
+    @staticmethod
+    def _extract_header_footer_content(hf_part) -> str:
+        """
+        Extract text content from a header or footer part.
+
+        Args:
+            hf_part: python-docx _Header or _Footer object
+
+        Returns:
+            Extracted text content
+        """
+        parts = []
+
+        for paragraph in hf_part.paragraphs:
+            text = paragraph.text.strip()
+            if text:
+                parts.append(text)
+
+        for table in hf_part.tables:
+            row_texts = []
+            for row in table.rows:
+                cell_texts = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cell_texts:
+                    row_texts.append(' | '.join(cell_texts))
+            if row_texts:
+                parts.append('\n'.join(row_texts))
+
+        return '\n'.join(parts)
 
     def _format_chart_data(self, chart_data) -> str:
         """Format ChartData using ChartProcessor."""
