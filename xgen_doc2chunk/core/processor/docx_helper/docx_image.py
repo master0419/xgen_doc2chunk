@@ -106,7 +106,8 @@ def process_pict_element(
     """
     # Use integrated method if DOCXImageProcessor
     if hasattr(image_processor, 'extract_from_pict'):
-        return image_processor.extract_from_pict(pict_elem, doc, processed_images)
+        content, _ = image_processor.extract_from_pict(pict_elem, doc, processed_images)
+        return content
     
     # Fallback: Legacy logic (when using base ImageProcessor class)
     try:

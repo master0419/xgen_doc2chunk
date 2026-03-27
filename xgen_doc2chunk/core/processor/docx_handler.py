@@ -291,7 +291,37 @@ class DOCXHandler(BaseHandler):
             for body_elem in doc.element.body:
                 local_tag = etree.QName(body_elem).localname
 
-                if local_tag == 'p':
+                if local_tag == 'sdt':
+                    # Structured Document Tag (e.g., TOC, bibliography)
+                    # Process sdtContent children as if they were body-level elements
+                    ns_w = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+                    sdt_content = body_elem.find('{%s}sdtContent' % ns_w)
+                    if sdt_content is not None:
+                        for sdt_child in sdt_content:
+                            sdt_child_tag = etree.QName(sdt_child).localname
+                            if sdt_child_tag == 'p':
+                                content, has_page_break, img_count, chart_count = process_paragraph_element(
+                                    sdt_child, doc, processed_images, file_path,
+                                    image_processor=self.format_image_processor,
+                                    chart_callback=get_next_chart
+                                )
+                                if has_page_break:
+                                    current_page += 1
+                                    page_tag = self.create_page_tag(current_page)
+                                    result_parts.append(f"\n{page_tag}\n")
+                                if content.strip():
+                                    result_parts.append(content + "\n")
+                                total_images += img_count
+                                total_charts += chart_count
+                            elif sdt_child_tag == 'tbl':
+                                table_data = self.table_extractor.extract_table(sdt_child, doc)
+                                if table_data:
+                                    table_html = self.table_processor.format_table_as_html(table_data)
+                                    if table_html:
+                                        total_tables += 1
+                                        result_parts.append("\n" + table_html + "\n\n")
+
+                elif local_tag == 'p':
                     # Paragraph processing - pass chart_callback for pre-extracted charts
                     content, has_page_break, img_count, chart_count = process_paragraph_element(
                         body_elem, doc, processed_images, file_path,

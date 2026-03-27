@@ -520,6 +520,8 @@ class DOCHandler(BaseHandler):
             # Word 97-2003 contains some Unicode text internally
             extracted_text = self._extract_text_from_word_stream(word_data)
             if extracted_text:
+                # Clean up Word field codes that get mixed into the text stream
+                extracted_text = self._clean_field_codes(extracted_text)
                 text_parts.append(extracted_text)
 
             return '\n'.join(text_parts)
@@ -527,6 +529,33 @@ class DOCHandler(BaseHandler):
         except Exception as e:
             self.logger.warning(f"Error extracting OLE text: {e}")
             return ""
+
+    @staticmethod
+    def _clean_field_codes(text: str) -> str:
+        """
+        Remove Word field codes from extracted OLE text.
+
+        In DOC binary format, field codes (TOC, HYPERLINK, PAGEREF, etc.)
+        are stored inline with the body text. This method removes them
+        while preserving the visible/display text.
+
+        Args:
+            text: Raw extracted text that may contain field codes
+
+        Returns:
+            Cleaned text with field codes removed
+        """
+        # Remove TOC field instruction (e.g., 'TOC \o "1-3" \h \z \u')
+        text = re.sub(r'TOC\s+\\[^\n]*', '', text)
+        # Remove HYPERLINK field instructions (e.g., 'HYPERLINK \l "_Toc225423683"')
+        text = re.sub(r'HYPERLINK\s+\\l\s+"[^"]*"', '', text)
+        # Remove PAGEREF field instructions (e.g., 'PAGEREF _Toc225423683 \h')
+        text = re.sub(r'PAGEREF\s+\S+(?:\s+\\[a-z])*', '', text)
+        # Remove other common field codes
+        text = re.sub(r'(?:FORMTEXT|FORMCHECKBOX|FORMDROPDOWN|SYMBOL|EMBED|LINK|REF|NOTEREF|INCLUDEPICTURE|INCLUDETEXT|INDEX|XE|TA|TC|SEQ|SET|ASK|FILLIN|IF|COMPARE|DOCPROPERTY|DOCVARIABLE|GOTOBUTTON|MACROBUTTON|PRINT|QUOTE|RD|STYLEREF|SUBJECT|TITLE|USERADDRESS|USERINITIALS|USERNAME)\s+\\[^\n]*', '', text)
+        # Clean up resulting blank lines
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text
 
     def _extract_ole_headers_footers(self, ole: olefile.OleFileIO) -> tuple:
         """
