@@ -72,6 +72,239 @@ def _process_table(table_element: ET.Element, ns: Dict[str, str]) -> str:
     return ""
 
 
+# Shape element tags that may contain drawText with text content
+_SHAPE_TAGS = frozenset({'container', 'rect', 'polygon', 'ellipse', 'arc', 'curve'})
+
+
+def _local_tag(elem: ET.Element) -> str:
+    """Return the local tag name without namespace URI."""
+    tag = elem.tag
+    if '}' in tag:
+        return tag.split('}', 1)[1]
+    return tag
+
+
+def _extract_sublist_text(
+    sublist: ET.Element,
+    ns: Dict[str, str],
+    zf: zipfile.ZipFile = None,
+    bin_item_map: Dict[str, str] = None,
+    processed_images: Set[str] = None,
+    image_processor: ImageProcessor = None,
+    chart_callback: Optional[Callable[[str], str]] = None,
+    section_headers: list = None,
+    section_footers: list = None,
+) -> str:
+    """hp:subList > hp:p 요소에서 텍스트를 추출합니다.
+
+    drawText (도형), header, footer, footnote, endnote 등에서 공통으로 사용됩니다.
+    """
+    parts = []
+    for p in sublist.findall('hp:p', ns):
+        p_parts = []
+        for run in p.findall('hp:run', ns):
+            run_parts = _process_run(
+                run, ns, zf, bin_item_map, processed_images,
+                image_processor, chart_callback, section_headers, section_footers
+            )
+            p_parts.extend(run_parts)
+        if p_parts:
+            parts.append("".join(p_parts))
+    return "\n".join(parts)
+
+
+def _extract_shape_text(
+    shape_elem: ET.Element,
+    ns: Dict[str, str],
+    zf: zipfile.ZipFile = None,
+    bin_item_map: Dict[str, str] = None,
+    processed_images: Set[str] = None,
+    image_processor: ImageProcessor = None,
+    chart_callback: Optional[Callable[[str], str]] = None,
+    section_headers: list = None,
+    section_footers: list = None,
+) -> str:
+    """도형 요소(container, rect, polygon, ellipse 등)에서 텍스트를 재귀적으로 추출합니다.
+
+    도형 내부 구조:
+    - drawText > subList > p (텍스트 콘텐츠)
+    - container 내부의 중첩 도형
+    """
+    texts = []
+    tag = _local_tag(shape_elem)
+
+    if tag == 'container':
+        # container는 여러 도형을 그룹핑 - 중첩 도형을 재귀적으로 처리
+        for child in shape_elem:
+            child_tag = _local_tag(child)
+            if child_tag in _SHAPE_TAGS:
+                child_text = _extract_shape_text(
+                    child, ns, zf, bin_item_map, processed_images,
+                    image_processor, chart_callback, section_headers, section_footers
+                )
+                if child_text:
+                    texts.append(child_text)
+
+    # 이 도형의 drawText 콘텐츠 추출
+    draw_text = shape_elem.find('hp:drawText', ns)
+    if draw_text is not None:
+        sub_list = draw_text.find('hp:subList', ns)
+        if sub_list is not None:
+            sl_text = _extract_sublist_text(
+                sub_list, ns, zf, bin_item_map, processed_images,
+                image_processor, chart_callback, section_headers, section_footers
+            )
+            if sl_text:
+                texts.append(sl_text)
+
+    return "\n".join(texts)
+
+
+def _process_run(
+    run: ET.Element,
+    ns: Dict[str, str],
+    zf: zipfile.ZipFile = None,
+    bin_item_map: Dict[str, str] = None,
+    processed_images: Set[str] = None,
+    image_processor: ImageProcessor = None,
+    chart_callback: Optional[Callable[[str], str]] = None,
+    section_headers: list = None,
+    section_footers: list = None,
+) -> list:
+    """hp:run 요소의 모든 자식을 문서 순서대로 처리합니다.
+
+    처리 대상: 텍스트, 테이블, 차트, 이미지, 도형, ctrl(머리글/바닥글/각주 등).
+    """
+    parts = []
+
+    for child in run:
+        tag = _local_tag(child)
+
+        if tag == 't':
+            if child.text:
+                parts.append(child.text)
+
+        elif tag == 'tbl':
+            table_html = _process_table(child, ns)
+            if table_html:
+                parts.append(f"\n{table_html}\n")
+
+        elif tag == 'switch':
+            case = child.find('hp:case', ns)
+            if case is not None:
+                chart = case.find('hp:chart', ns)
+                if chart is not None and chart_callback:
+                    chart_id_ref = chart.get('chartIDRef')
+                    if chart_id_ref:
+                        chart_text = chart_callback(chart_id_ref)
+                        if chart_text:
+                            parts.append(f"\n{chart_text}\n")
+
+        elif tag == 'pic':
+            if zf and bin_item_map:
+                image_text = _process_inline_image(
+                    child, zf, bin_item_map, processed_images, image_processor
+                )
+                if image_text:
+                    parts.append(image_text)
+
+        elif tag == 'ctrl':
+            ctrl_parts = _process_ctrl(
+                child, ns, zf, bin_item_map, processed_images,
+                image_processor, chart_callback, section_headers, section_footers
+            )
+            parts.extend(ctrl_parts)
+
+        elif tag in _SHAPE_TAGS:
+            shape_text = _extract_shape_text(
+                child, ns, zf, bin_item_map, processed_images,
+                image_processor, chart_callback, section_headers, section_footers
+            )
+            if shape_text:
+                parts.append(shape_text)
+
+    return parts
+
+
+def _process_ctrl(
+    ctrl: ET.Element,
+    ns: Dict[str, str],
+    zf: zipfile.ZipFile = None,
+    bin_item_map: Dict[str, str] = None,
+    processed_images: Set[str] = None,
+    image_processor: ImageProcessor = None,
+    chart_callback: Optional[Callable[[str], str]] = None,
+    section_headers: list = None,
+    section_footers: list = None,
+) -> list:
+    """ctrl 요소의 자식을 처리합니다.
+
+    ctrl 내부: header, footer, footNote, endNote, table, image, 도형 등.
+    header/footer 텍스트는 섹션 레벨 리스트에 수집하여 출력 상단/하단에 배치합니다.
+    """
+    parts = []
+
+    for child in ctrl:
+        tag = _local_tag(child)
+
+        if tag == 'tbl':
+            table_html = _process_table(child, ns)
+            if table_html:
+                parts.append(f"\n{table_html}\n")
+
+        elif tag == 'pic':
+            # hp:pic 또는 hc:pic 모두 동일하게 처리
+            if zf and bin_item_map:
+                image_text = _process_inline_image(
+                    child, zf, bin_item_map, processed_images, image_processor
+                )
+                if image_text:
+                    parts.append(image_text)
+
+        elif tag == 'header':
+            if section_headers is not None:
+                sub_list = child.find('hp:subList', ns)
+                if sub_list is not None:
+                    h_text = _extract_sublist_text(
+                        sub_list, ns, zf, bin_item_map, processed_images,
+                        image_processor, chart_callback, section_headers, section_footers
+                    )
+                    if h_text:
+                        section_headers.append(f"[Header]\n{h_text}")
+
+        elif tag == 'footer':
+            if section_footers is not None:
+                sub_list = child.find('hp:subList', ns)
+                if sub_list is not None:
+                    f_text = _extract_sublist_text(
+                        sub_list, ns, zf, bin_item_map, processed_images,
+                        image_processor, chart_callback, section_headers, section_footers
+                    )
+                    if f_text:
+                        section_footers.append(f"[Footer]\n{f_text}")
+
+        elif tag in ('footNote', 'endNote'):
+            sub_list = child.find('hp:subList', ns)
+            if sub_list is not None:
+                note_text = _extract_sublist_text(
+                    sub_list, ns, zf, bin_item_map, processed_images,
+                    image_processor, chart_callback, section_headers, section_footers
+                )
+                if note_text:
+                    label = "Footnote" if tag == 'footNote' else "Endnote"
+                    parts.append(f"\n[{label}]\n{note_text}")
+
+        elif tag in _SHAPE_TAGS:
+            shape_text = _extract_shape_text(
+                child, ns, zf, bin_item_map, processed_images,
+                image_processor, chart_callback, section_headers, section_footers
+            )
+            if shape_text:
+                parts.append(shape_text)
+
+    return parts
+
+
 def parse_hwpx_section(
     xml_content: bytes,
     zf: zipfile.ZipFile = None,
@@ -83,15 +316,17 @@ def parse_hwpx_section(
     """
     HWPX 섹션 XML을 파싱합니다.
 
-    문단, 테이블, 인라인 이미지, 차트를 원본 문서 순서대로 처리합니다.
+    문단, 테이블, 인라인 이미지, 차트, 도형, 머리글/바닥글을 원본 문서 순서대로 처리합니다.
 
     HWPX structure:
     - <hs:sec> -> <hp:p> (최상위 문단)
     - <hp:p> -> <hp:run> -> <hp:t> (Text)
     - <hp:p> -> <hp:run> -> <hp:tbl> (Table)
     - <hp:p> -> <hp:run> -> <hp:ctrl> -> <hc:pic> (Image)
+    - <hp:p> -> <hp:run> -> <hp:ctrl> -> <hp:header/footer> (Header/Footer)
     - <hp:p> -> <hp:run> -> <hp:switch> -> <hp:case> -> <hp:chart> (Chart)
     - <hp:p> -> <hp:run> -> <hp:pic> (Direct Image)
+    - <hp:p> -> <hp:run> -> <hp:container/rect/polygon/ellipse> (Shapes with drawText)
 
     Args:
         xml_content: 섹션 XML 바이너리 데이터
@@ -109,69 +344,30 @@ def parse_hwpx_section(
         root = ET.fromstring(xml_content)
         ns = HWPX_NAMESPACES
 
+        section_headers = []
+        section_footers = []
         text_parts = []
 
         # 최상위 레벨의 hp:p만 처리 (테이블 내부의 hp:p는 테이블 파서에서 처리)
         for p in root.findall('hp:p', ns):
             p_text = []
             for run in p.findall('hp:run', ns):
-                # Text
-                t = run.find('hp:t', ns)
-                if t is not None and t.text:
-                    p_text.append(t.text)
-
-                # Table (직접 hp:run 안에 hp:tbl로 존재!)
-                table = run.find('hp:tbl', ns)
-                if table is not None:
-                    table_html = _process_table(table, ns)
-                    if table_html:
-                        p_text.append(f"\n{table_html}\n")
-
-                # Chart in switch/case (hp:switch > hp:case > hp:chart)
-                switch = run.find('hp:switch', ns)
-                if switch is not None:
-                    case = switch.find('hp:case', ns)
-                    if case is not None:
-                        chart = case.find('hp:chart', ns)
-                        if chart is not None and chart_callback:
-                            chart_id_ref = chart.get('chartIDRef')
-                            if chart_id_ref:
-                                chart_text = chart_callback(chart_id_ref)
-                                if chart_text:
-                                    p_text.append(f"\n{chart_text}\n")
-
-                # Direct Image (hp:pic directly in hp:run)
-                pic = run.find('hp:pic', ns)
-                if pic is not None and zf and bin_item_map:
-                    image_text = _process_inline_image(
-                        pic, zf, bin_item_map, processed_images, image_processor
-                    )
-                    if image_text:
-                        p_text.append(image_text)
-
-                # Ctrl (Image 등)
-                ctrl = run.find('hp:ctrl', ns)
-                if ctrl is not None:
-                    # 혹시 ctrl 안에 테이블이 있는 경우도 처리
-                    ctrl_table = ctrl.find('hp:tbl', ns)
-                    if ctrl_table is not None:
-                        table_html = _process_table(ctrl_table, ns)
-                        if table_html:
-                            p_text.append(f"\n{table_html}\n")
-
-                    # Image (hc:pic)
-                    pic = ctrl.find('hc:pic', ns)
-                    if pic is not None and zf and bin_item_map:
-                        image_text = _process_inline_image(
-                            pic, zf, bin_item_map, processed_images, image_processor
-                        )
-                        if image_text:
-                            p_text.append(image_text)
+                run_parts = _process_run(
+                    run, ns, zf, bin_item_map, processed_images,
+                    image_processor, chart_callback, section_headers, section_footers
+                )
+                p_text.extend(run_parts)
 
             if p_text:
                 text_parts.append("".join(p_text))
 
-        return "\n".join(text_parts)
+        # 머리글을 상단에, 바닥글을 하단에 배치
+        result = []
+        result.extend(section_headers)
+        result.extend(text_parts)
+        result.extend(section_footers)
+
+        return "\n".join(result)
 
     except Exception as e:
         logger.error(f"Error parsing HWPX XML: {e}")

@@ -263,53 +263,62 @@ class DOCXImageProcessor(ImageProcessor):
         pict_elem,
         doc: "Document",
         processed_images: Set[str],
-    ) -> str:
+    ) -> Tuple[str, Optional[ElementType]]:
         """
-        Extract image from legacy VML pict element.
-        
-        This is the core DOCX VML image extraction logic that was previously
-        in docx_image.py process_pict_element() function.
-        
+        Extract content from legacy VML pict element.
+
+        Handles both Word 2007-2009 (VML only) formats:
+        - Image: v:shape > v:imagedata  → returns (image_tag, ElementType.IMAGE)
+        - Textbox: v:shape > v:textbox > w:txbxContent → returns (text, ElementType.TEXT)
+
         Args:
             pict_elem: pict XML element
             doc: python-docx Document object
             processed_images: Set of processed image paths (deduplication)
-            
+
         Returns:
-            Image tag string or placeholder
+            (content, element_type) tuple
         """
         try:
-            # Find VML imagedata
             ns_v = 'urn:schemas-microsoft-com:vml'
             ns_r = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+            ns_w = NAMESPACES['w']
 
+            # --- Case 1: Image (v:imagedata present) ---
             imagedata = pict_elem.find('.//{%s}imagedata' % ns_v)
-            if imagedata is None:
-                return "[Unknown Image]"
+            if imagedata is not None:
+                rId = imagedata.get('{%s}id' % ns_r)
+                if rId:
+                    try:
+                        rel = doc.part.rels.get(rId)
+                        if rel and hasattr(rel, 'target_part') and hasattr(rel.target_part, 'blob'):
+                            image_data = rel.target_part.blob
+                            image_tag = self.process_image(
+                                image_data,
+                                rel_id=rId,
+                                processed_images=processed_images
+                            )
+                            if image_tag:
+                                return f"\n{image_tag}\n", ElementType.IMAGE
+                    except Exception:
+                        pass
+                return "", None
 
-            rId = imagedata.get('{%s}id' % ns_r)
-            if not rId:
-                return "[Unknown Image]"
+            # --- Case 2: Textbox (v:textbox > w:txbxContent) ---
+            # Word 2007-2009: shapes/textboxes with text use VML textbox structure
+            texts = []
+            for txbx_content in pict_elem.iter('{%s}txbxContent' % ns_w):
+                for t_elem in txbx_content.iter('{%s}t' % ns_w):
+                    if t_elem.text:
+                        texts.append(t_elem.text)
+            if texts:
+                return ''.join(texts), ElementType.TEXT
 
-            try:
-                rel = doc.part.rels.get(rId)
-                if rel and hasattr(rel, 'target_part') and hasattr(rel.target_part, 'blob'):
-                    image_data = rel.target_part.blob
-                    image_tag = self.process_image(
-                        image_data,
-                        rel_id=rId,
-                        processed_images=processed_images
-                    )
-                    if image_tag:
-                        return f"\n{image_tag}\n"
-            except Exception:
-                pass
-
-            return "[Unknown Image]"
+            return "", None
 
         except Exception as e:
             logger.warning(f"Error processing pict element: {e}")
-            return ""
+            return "", None
     
     def process_drawing_element(
         self,
@@ -371,12 +380,60 @@ class DOCXImageProcessor(ImageProcessor):
             if 'diagram' in uri.lower():
                 return self.extract_diagram(graphic_data)
 
+            # WordprocessingShape case (shapes/textboxes with text)
+            if 'wordprocessingshape' in uri.lower():
+                return self.extract_shape_text(graphic_data)
+
+            # WordprocessingCanvas case (canvas containing shapes)
+            if 'wordprocessingcanvas' in uri.lower():
+                return self.extract_shape_text(graphic_data)
+
             return "", None
 
         except Exception as e:
             logger.warning(f"Error processing drawing element: {e}")
             return "", None
     
+    def extract_shape_text(
+        self,
+        graphic_data,
+    ) -> Tuple[str, Optional[ElementType]]:
+        """
+        Extract text from WordprocessingShape (shapes and textboxes).
+
+        Shapes/textboxes contain text in wps:wsp > wps:txbx > w:txbxContent > w:p > w:r > w:t.
+
+        Args:
+            graphic_data: graphicData XML element
+
+        Returns:
+            (content, element_type) tuple
+        """
+        try:
+            ns_w = NAMESPACES['w']
+
+            texts = []
+            # Find all text elements inside txbxContent (textbox content)
+            # txbxContent can contain: w:p directly, or w:sdt > w:sdtContent > w:p
+            for txbx_content in graphic_data.iter('{%s}txbxContent' % ns_w):
+                # Use .iter to find all w:t elements at any depth inside txbxContent
+                # This handles both direct paragraphs and sdt-wrapped paragraphs
+                para_texts = []
+                for t_elem in txbx_content.iter('{%s}t' % ns_w):
+                    if t_elem.text:
+                        para_texts.append(t_elem.text)
+                if para_texts:
+                    texts.append(''.join(para_texts))
+
+            if texts:
+                return '\n'.join(texts), ElementType.TEXT
+
+            return "", None
+
+        except Exception as e:
+            logger.warning(f"Error extracting shape text: {e}")
+            return "", None
+
     def extract_diagram(
         self,
         graphic_data,

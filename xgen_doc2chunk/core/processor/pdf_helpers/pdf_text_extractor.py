@@ -126,12 +126,12 @@ def extract_text_blocks(
 
         block_bbox = block.get("bbox", (0, 0, 0, 0))
 
-        if is_inside_any_bbox(block_bbox, table_bboxes):
-            continue
-
         text_parts = []
 
         for line in block.get("lines", []):
+            line_bbox = line.get("bbox", (0, 0, 0, 0))
+            if is_inside_any_bbox(line_bbox, table_bboxes):
+                continue
             line_text = ""
             for span in line.get("spans", []):
                 line_text += span.get("text", "")

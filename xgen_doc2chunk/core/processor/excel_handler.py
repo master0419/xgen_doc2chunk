@@ -138,6 +138,12 @@ class ExcelHandler(BaseHandler):
         ext = ext.lstrip('.')
         self.logger.info(f"Excel processing: {file_path}, ext: {ext}")
 
+        # Check if file content is actually HTML disguised as Excel
+        file_data = current_file.get("file_data", b"")
+        if self._is_html_content(file_data):
+            self.logger.info(f"Detected HTML content in .{ext} file, processing as HTML table")
+            return self._extract_html_as_excel(current_file)
+
         if ext == 'xlsx':
             return self._extract_xlsx(current_file, extract_metadata)
         elif ext == 'xls':
@@ -268,6 +274,281 @@ class ExcelHandler(BaseHandler):
             import traceback
             self.logger.debug(traceback.format_exc())
             raise
+
+    @staticmethod
+    def _is_html_content(file_data: bytes) -> bool:
+        """
+        Check if file content is actually HTML (not a real Excel binary/ZIP).
+
+        Some systems (e.g., government websites) export HTML tables with
+        .xls/.xlsx extensions. Excel can open these, but xlrd/openpyxl cannot.
+
+        Note: Valid XLS always starts with OLE magic (\\xd0\\xcf\\x11\\xe0...),
+        and valid XLSX always starts with ZIP magic (PK\\x03\\x04).
+        Neither can ever start with '<html' or '<!doctype', so these checks
+        are safe with zero false positives.
+
+        Files starting with '<?xml' need extra verification because
+        Excel 2003 XML Spreadsheet format also starts with '<?xml' but
+        is NOT HTML — it contains <Workbook> instead of <html>.
+        """
+        if not file_data or len(file_data) < 20:
+            return False
+        # Check first 1024 bytes for HTML signatures (skip BOM if present)
+        header = file_data[:1024].lstrip(b'\xef\xbb\xbf').lstrip()
+        header_lower = header.lower()
+        # Definitive HTML signatures
+        if header_lower.startswith(b'<html') or header_lower.startswith(b'<!doctype'):
+            return True
+        # For <?xml, verify <html> tag exists (exclude Excel 2003 XML Spreadsheet)
+        if header_lower.startswith(b'<?xml'):
+            return b'<html' in header_lower
+        return False
+
+    def _extract_html_as_excel(
+        self,
+        current_file: "CurrentFile",
+    ) -> str:
+        """
+        Process an HTML file disguised as Excel (.xls/.xlsx).
+
+        Parses HTML tables using BeautifulSoup and converts them to
+        the same output format as regular Excel processing.
+
+        Handles two patterns:
+        - Single table with <thead>/<tbody> (standard HTML)
+        - Header-only table followed by body-only table (e.g. government websites)
+          → these are merged into one logical table before output
+        """
+        from bs4 import BeautifulSoup
+
+        file_path = current_file.get("file_path", "unknown")
+        file_data = current_file.get("file_data", b"")
+        self.logger.info(f"HTML-as-Excel processing: {file_path}")
+
+        try:
+            # Decode HTML content
+            text = self._decode_html_bytes(file_data)
+            soup = BeautifulSoup(text, 'html.parser')
+
+            tables = soup.find_all('table')
+            if not tables:
+                # No tables found - extract plain text
+                body = soup.find('body')
+                plain_text = body.get_text(separator='\n', strip=True) if body else soup.get_text(separator='\n', strip=True)
+                return plain_text
+
+            # Merge consecutive split tables:
+            # A "header-only" table (has <thead> or only <th> cells, no <td>)
+            # followed by a "body-only" table (has <tbody> or only <td> cells, no <th>)
+            # are treated as a single logical table.
+            logical_tables = self._merge_split_tables(tables)
+
+            result_parts = []
+            output_count = 0
+
+            for logical_table in logical_tables:
+                header_rows = logical_table['header_rows']  # list of <tr> tags
+                body_rows = logical_table['body_rows']      # list of <tr> tags
+                all_rows = header_rows + body_rows
+
+                if not all_rows:
+                    continue
+
+                # Build grids separately so we know which rows are header
+                header_grid = self._html_table_to_grid(header_rows) if header_rows else []
+                body_grid = self._html_table_to_grid(body_rows) if body_rows else []
+
+                if not header_grid and not body_grid:
+                    continue
+
+                has_merged = any(
+                    int(cell.get('colspan', 1)) > 1 or int(cell.get('rowspan', 1)) > 1
+                    for tr in all_rows
+                    for cell in tr.find_all(['td', 'th'])
+                )
+
+                if has_merged:
+                    table_str = self._grid_to_html_table(header_grid + body_grid)
+                else:
+                    table_str = self._grid_to_markdown_table(
+                        header_grid, body_grid
+                    )
+
+                output_count += 1
+                if len(logical_tables) > 1:
+                    result_parts.append(f"\n[Table {output_count}]\n{table_str}\n")
+                else:
+                    result_parts.append(f"\n{table_str}\n")
+
+            result = "".join(result_parts)
+            self.logger.info(
+                f"HTML-as-Excel processing completed: {output_count} tables extracted"
+            )
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error in HTML-as-Excel processing: {e}")
+            import traceback
+            self.logger.debug(traceback.format_exc())
+            raise
+
+    @staticmethod
+    def _merge_split_tables(tables) -> List[Dict]:
+        """
+        Analyse a list of <table> tags and merge consecutive pairs where
+        the first contains only header rows (<thead> / <th>) and the second
+        contains only body rows (<tbody> / <td>).
+
+        Returns a list of dicts with keys:
+            'header_rows': list of <tr> BeautifulSoup tags
+            'body_rows':   list of <tr> BeautifulSoup tags
+        """
+        def classify(table):
+            """Return ('header', rows) | ('body', rows) | ('mixed', rows)."""
+            all_tr = table.find_all('tr')
+            if not all_tr:
+                return 'empty', []
+            has_th = bool(table.find('th'))
+            has_td = bool(table.find('td'))
+            thead_rows = [tr for tr in table.find_all('tr') if tr.find_parent('thead')]
+            tbody_rows = [tr for tr in table.find_all('tr') if tr.find_parent('tbody')]
+            # Header-only: has <thead> but no <tbody>, or only <th> cells
+            if has_th and not has_td:
+                return 'header_only', all_tr
+            # Body-only: has <tbody> but no <thead>, or only <td> cells
+            if has_td and not has_th:
+                return 'body_only', all_tr
+            # Mixed: single table with both <thead> and <tbody>
+            return 'mixed', (thead_rows or all_tr[:1], tbody_rows or all_tr[1:])
+
+        logical = []
+        i = 0
+        while i < len(tables):
+            kind, rows = classify(tables[i])
+            if kind == 'empty':
+                i += 1
+                continue
+            if kind == 'header_only' and i + 1 < len(tables):
+                next_kind, next_rows = classify(tables[i + 1])
+                if next_kind == 'body_only':
+                    logical.append({'header_rows': rows, 'body_rows': next_rows})
+                    i += 2
+                    continue
+            if kind == 'mixed':
+                header_rows, body_rows = rows
+                logical.append({'header_rows': header_rows, 'body_rows': body_rows})
+            elif kind == 'header_only':
+                logical.append({'header_rows': rows, 'body_rows': []})
+            else:  # body_only or unmerged
+                logical.append({'header_rows': [], 'body_rows': rows})
+            i += 1
+        return logical
+
+    @staticmethod
+    def _decode_html_bytes(file_data: bytes) -> str:
+        """Decode HTML bytes to string with encoding fallback."""
+        for enc in ['utf-8', 'utf-8-sig', 'cp949', 'euc-kr', 'latin-1']:
+            try:
+                return file_data.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return file_data.decode('utf-8', errors='replace')
+
+    @staticmethod
+    def _html_table_to_grid(rows) -> List[List[str]]:
+        """Convert HTML table rows to a 2D grid, handling colspan/rowspan."""
+        grid: List[List[Optional[str]]] = []
+        for row_idx, row in enumerate(rows):
+            cells = row.find_all(['td', 'th'])
+            while len(grid) <= row_idx:
+                grid.append([])
+            col_idx = 0
+            for cell in cells:
+                # Skip columns already filled by rowspan
+                while col_idx < len(grid[row_idx]) and grid[row_idx][col_idx] is not None:
+                    col_idx += 1
+
+                cell_text = cell.get_text(separator=' ', strip=True)
+                colspan = int(cell.get('colspan', 1))
+                rowspan = int(cell.get('rowspan', 1))
+
+                for r in range(rowspan):
+                    target_row = row_idx + r
+                    while len(grid) <= target_row:
+                        grid.append([])
+                    while len(grid[target_row]) < col_idx + colspan:
+                        grid[target_row].append(None)
+                    for c in range(colspan):
+                        grid[target_row][col_idx + c] = cell_text
+
+                col_idx += colspan
+
+        # Normalize row lengths
+        max_cols = max((len(r) for r in grid), default=0)
+        for row in grid:
+            while len(row) < max_cols:
+                row.append('')
+            for i in range(len(row)):
+                if row[i] is None:
+                    row[i] = ''
+
+        return grid
+
+    @staticmethod
+    def _html_table_has_merged_cells(table) -> bool:
+        """Check if an HTML table has any merged cells."""
+        for cell in table.find_all(['td', 'th']):
+            if int(cell.get('colspan', 1)) > 1 or int(cell.get('rowspan', 1)) > 1:
+                return True
+        return False
+
+    @staticmethod
+    def _grid_to_markdown_table(
+        header_grid: List[List[str]],
+        body_grid: List[List[str]]
+    ) -> str:
+        """
+        Convert header and body grids to a Markdown table string.
+
+        - header_grid rows become the header line(s); only the first header
+          row is used as the Markdown header (Markdown supports one header row).
+        - body_grid rows become data rows.
+        - If there is no header_grid, the first body row is used as the header.
+        """
+        if not header_grid and not body_grid:
+            return ''
+
+        if header_grid:
+            header = header_grid[0]
+            # Any extra header rows are prepended as data rows
+            data_rows = header_grid[1:] + body_grid
+        else:
+            # No explicit header: promote first body row
+            header = body_grid[0]
+            data_rows = body_grid[1:]
+
+        col_count = len(header)
+        lines = []
+        lines.append('| ' + ' | '.join(header) + ' |')
+        lines.append('| ' + ' | '.join(['---'] * col_count) + ' |')
+        for row in data_rows:
+            lines.append('| ' + ' | '.join(row) + ' |')
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _grid_to_html_table(grid: List[List[str]]) -> str:
+        """Convert 2D grid to HTML table string."""
+        if not grid:
+            return ''
+        lines = ['<table>']
+        for row in grid:
+            lines.append('  <tr>')
+            for cell in row:
+                lines.append(f'    <td>{cell}</td>')
+            lines.append('  </tr>')
+        lines.append('</table>')
+        return '\n'.join(lines)
 
     def _preload_xlsx_data(
         self, current_file: "CurrentFile", wb, extract_metadata: bool

@@ -543,12 +543,98 @@ def _split_text(
     # Clean chunks
     cleaned_chunks = _clean_chunks(chunks, page_tag_processor)
 
+    # Merge tiny chunks with next chunk (prevents table-title isolation)
+    cleaned_chunks = _merge_small_chunks(
+        cleaned_chunks, chunk_size, page_tag_processor
+    )
+
     # Add metadata
     cleaned_chunks = _prepend_metadata_to_chunks(cleaned_chunks, metadata_block)
 
     logger.info(f"Final text split into {len(cleaned_chunks)} chunks")
 
     return cleaned_chunks
+
+# ============================================================================
+# Internal Functions - Small Chunk Merging
+# ============================================================================
+
+def _merge_small_chunks(
+    chunks: List[str],
+    chunk_size: int,
+    page_tag_processor: Optional[Any] = None,
+    min_ratio: float = 0.1,
+) -> List[str]:
+    """
+    Merge tiny chunks (< min_ratio of chunk_size) with the next chunk.
+
+    Prevents table titles from being isolated in their own chunk when
+    split_with_protected_regions cuts right before a table boundary.
+
+    Rules:
+    - If chunk size < chunk_size * min_ratio, merge with next chunk
+    - Allow chained merging (A+B still small → merge A+B+C)
+    - Don't merge across page boundaries ([Page Number:], [Slide Number:], [Sheet:])
+
+    Args:
+        chunks: List of chunks
+        chunk_size: Target chunk size
+        page_tag_processor: PageTagProcessor for page marker detection
+        min_ratio: Threshold ratio (default 0.1 = 10%)
+
+    Returns:
+        List of merged chunks
+    """
+    if len(chunks) <= 1:
+        return chunks
+
+    threshold = int(chunk_size * min_ratio)
+
+    # Build page/slide/sheet marker patterns
+    page_patterns = _get_page_marker_patterns(page_tag_processor)
+    sheet_pattern = _get_sheet_marker_pattern(page_tag_processor)
+
+    def _starts_with_page_boundary(text: str) -> bool:
+        """Check if text starts with a page/slide/sheet marker."""
+        stripped = text.strip()
+        for pattern in page_patterns:
+            if re.match(pattern, stripped):
+                return True
+        if re.match(sheet_pattern, stripped):
+            return True
+        return False
+
+    result = []
+    i = 0
+
+    while i < len(chunks):
+        current = chunks[i]
+
+        # Chain-merge while current is small
+        while len(current) < threshold and i + 1 < len(chunks):
+            next_chunk = chunks[i + 1]
+
+            # Don't merge across page boundaries
+            if _starts_with_page_boundary(next_chunk):
+                break
+
+            current = current + "\n\n" + next_chunk
+            i += 1
+
+        # Backward merge: if still small after forward merge attempts
+        # (blocked by page boundary), merge into the previous chunk
+        if len(current) < threshold and result:
+            result[-1] = result[-1] + "\n\n" + current
+        else:
+            result.append(current)
+        i += 1
+
+    if len(result) < len(chunks):
+        merged_count = len(chunks) - len(result)
+        logger.info(f"Merged {merged_count} small chunks (threshold: {threshold} chars)")
+
+    return result
+
 
 # ============================================================================
 # Internal Wrapper Functions
