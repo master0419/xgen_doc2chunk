@@ -352,6 +352,20 @@ class BaseHandler(ABC):
         """
         pass
 
+    def extract_text_fast(self, current_file: "CurrentFile") -> str:
+        """
+        Fast text-only extraction (default fallback).
+
+        Intended for "is there any text-based PII / forbidden word in this file?" use
+        cases (pre-scan). Subclasses should override with a cheap path that skips
+        table reconstruction, image extraction, OCR, chart processing, metadata, etc.
+
+        Default fallback: delegates to ``extract_text(..., extract_metadata=False,
+        ocr_processing=False)``. This is correct but NOT necessarily fast — subclasses
+        with heavy default pipelines (PDF, DOCX, PPTX, ...) should override.
+        """
+        return self.extract_text(current_file, extract_metadata=False, ocr_processing=False)
+
     def extract_metadata(self, source: Any) -> DocumentMetadata:
         """
         Extract metadata from source using format-specific extractor.

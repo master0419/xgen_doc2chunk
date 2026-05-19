@@ -157,6 +157,39 @@ class DOCXHandler(BaseHandler):
             self.logger.warning(f"File is not a valid DOCX, trying DOCHandler fallback: {file_path}")
             return self._extract_with_doc_handler_fallback(current_file, extract_metadata)
 
+    def extract_text_fast(self, current_file: "CurrentFile") -> str:
+        """
+        Fast plain-text extraction for pre-scan.
+
+        Reads body paragraphs only. Skips: inline images, tables HTML, charts,
+        headers/footers, comments, metadata. Uses python-docx directly to bypass
+        the heavy enhanced pipeline.
+        """
+        file_path = current_file.get("file_path", "unknown")
+        file_data = current_file.get("file_data", b"")
+        self.logger.info(f"[DOCX fast] Plain text extraction: {file_path}")
+
+        try:
+            import io as _io
+            from docx import Document  # python-docx
+            doc = Document(_io.BytesIO(file_data))
+            paragraphs = []
+            for para in doc.paragraphs:
+                txt = (para.text or "").strip()
+                if txt:
+                    paragraphs.append(txt)
+            # 표 셀의 텍스트도 PII/금칙어 탐지 대상이므로 plain text 로만 join.
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        ctxt = (cell.text or "").strip()
+                        if ctxt:
+                            paragraphs.append(ctxt)
+            return "\n".join(paragraphs)
+        except Exception as e:
+            self.logger.warning(f"[DOCX fast] Error on {file_path}: {e} — falling back to extract_text")
+            return self.extract_text(current_file, extract_metadata=False)
+
     def _extract_with_doc_handler_fallback(
         self,
         current_file: "CurrentFile",

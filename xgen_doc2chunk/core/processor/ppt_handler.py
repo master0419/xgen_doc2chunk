@@ -86,6 +86,46 @@ class PPTHandler(BaseHandler):
         self.logger.info(f"PPT processing: {file_path}")
         return self._extract_ppt_enhanced(current_file, extract_metadata)
 
+    def extract_text_fast(self, current_file: "CurrentFile") -> str:
+        """
+        Fast plain-text extraction for pre-scan.
+
+        Iterates slides → shapes → text_frame paragraphs. Skips: charts, embedded
+        images, OLE objects, slide notes (slide notes 는 사용자가 발표용 메모로
+        쓰는 경우가 많아 PII 가능성은 낮음 — 필요시 후속 보강).
+        """
+        file_path = current_file.get("file_path", "unknown")
+        file_data = current_file.get("file_data", b"")
+        self.logger.info(f"[PPT fast] Plain text extraction: {file_path}")
+
+        try:
+            import io as _io
+            from pptx import Presentation  # python-pptx
+            prs = Presentation(_io.BytesIO(file_data))
+            texts = []
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if not getattr(shape, "has_text_frame", False):
+                        continue
+                    tf = shape.text_frame
+                    for para in tf.paragraphs:
+                        line = "".join(run.text or "" for run in para.runs).strip()
+                        if line:
+                            texts.append(line)
+                # 표가 있으면 cell 텍스트도 수집
+                for shape in slide.shapes:
+                    if getattr(shape, "has_table", False):
+                        table = shape.table
+                        for row in table.rows:
+                            for cell in row.cells:
+                                ctext = (cell.text_frame.text or "").strip()
+                                if ctext:
+                                    texts.append(ctext)
+            return "\n".join(texts)
+        except Exception as e:
+            self.logger.warning(f"[PPT fast] Error on {file_path}: {e} — falling back to extract_text")
+            return self.extract_text(current_file, extract_metadata=False)
+
     def _extract_ppt_enhanced(self, current_file: "CurrentFile", extract_metadata: bool = True) -> str:
         """Enhanced PPT processing with pre-extracted charts."""
         file_path = current_file.get("file_path", "unknown")

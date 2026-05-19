@@ -181,6 +181,36 @@ class PDFHandler(BaseHandler):
         self.logger.info(f"[PDF] Processing: {file_path}")
         return self._extract_pdf(current_file, extract_metadata)
 
+    def extract_text_fast(self, current_file: "CurrentFile") -> str:
+        """
+        Fast plain-text extraction for pre-scan use case.
+
+        Skips: table detection (PyMuPDF/pdfplumber), per-page complexity analysis,
+        vector text OCR, block image OCR, image extraction, chart processing,
+        metadata header. Just iterates pages and pulls ``page.get_text("text")``.
+        """
+        file_path = current_file.get("file_path", "unknown")
+        file_data = current_file.get("file_data", b"")
+        self.logger.info(f"[PDF fast] Plain text extraction: {file_path}")
+
+        try:
+            doc = self.file_converter.convert(file_data)
+            page_texts = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                try:
+                    page_text = page.get_text("text") or ""
+                except Exception as page_err:
+                    self.logger.debug(f"[PDF fast] page {page_num+1} get_text failed: {page_err}")
+                    page_text = ""
+                if page_text.strip():
+                    page_texts.append(page_text)
+            doc.close()
+            return "\n\n".join(page_texts)
+        except Exception as e:
+            self.logger.warning(f"[PDF fast] Error on {file_path}: {e} — falling back to extract_text")
+            return self._extract_pdf(current_file, extract_metadata=False)
+
     def _extract_pdf(
         self,
         current_file: "CurrentFile",
