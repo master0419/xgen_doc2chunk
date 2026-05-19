@@ -105,6 +105,18 @@ class ImageFileHandler(BaseHandler):
         """Set OCR engine instance."""
         self._ocr_engine = engine
 
+    def extract_text_fast(self, current_file: "CurrentFile") -> str:
+        """
+        Fast pre-scan for image files: no OCR — return empty text.
+
+        Pre-scan 의 목적은 "텍스트 기반 PII / 금칙어 감지" 이므로 이미지 파일은
+        OCR 수행 비용이 부담스럽고, 또한 본 호출에는 OCR engine 이 주입되지 않은
+        상태로 호출될 수 있음 (DocumentProcessor._get_xgen_doc2chunk_processor 가
+        ocr_processing=False 로 호출됨). 빈 문자열을 반환하여 pre-scan 이 즉시
+        넘어가게 한다.
+        """
+        return ""
+
     def extract_text(
         self,
         current_file: "CurrentFile",

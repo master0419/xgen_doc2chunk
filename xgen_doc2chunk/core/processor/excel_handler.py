@@ -151,6 +151,50 @@ class ExcelHandler(BaseHandler):
         else:
             raise ValueError(f"Unsupported Excel format: {ext}")
 
+    def extract_text_fast(self, current_file: "CurrentFile") -> str:
+        """
+        Fast plain-text extraction for pre-scan.
+
+        Reads cell values only. Skips: textbox, embedded images, charts, formatting.
+        XLSX 는 openpyxl, XLS 는 xlrd 직접 사용.
+        """
+        file_path = current_file.get("file_path", "unknown")
+        file_data = current_file.get("file_data", b"")
+        ext = current_file.get("file_extension", os.path.splitext(file_path)[1]).lower().lstrip('.')
+        self.logger.info(f"[Excel fast] Plain text extraction: {file_path} ext={ext}")
+
+        try:
+            import io as _io
+            lines = []
+            if ext == 'xlsx':
+                from openpyxl import load_workbook
+                wb = load_workbook(_io.BytesIO(file_data), read_only=True, data_only=True)
+                for sheet in wb.worksheets:
+                    for row in sheet.iter_rows(values_only=True):
+                        row_vals = [str(v) for v in row if v is not None and str(v).strip()]
+                        if row_vals:
+                            lines.append("\t".join(row_vals))
+                wb.close()
+            elif ext == 'xls':
+                import xlrd
+                book = xlrd.open_workbook(file_contents=file_data)
+                for sheet in book.sheets():
+                    for row_idx in range(sheet.nrows):
+                        row_vals = []
+                        for col_idx in range(sheet.ncols):
+                            v = sheet.cell_value(row_idx, col_idx)
+                            if v is not None and str(v).strip():
+                                row_vals.append(str(v))
+                        if row_vals:
+                            lines.append("\t".join(row_vals))
+            else:
+                # 알 수 없는 ext — fallback
+                return self.extract_text(current_file, extract_metadata=False)
+            return "\n".join(lines)
+        except Exception as e:
+            self.logger.warning(f"[Excel fast] Error on {file_path}: {e} — falling back to extract_text")
+            return self.extract_text(current_file, extract_metadata=False)
+
     def _extract_xlsx(
         self,
         current_file: "CurrentFile",

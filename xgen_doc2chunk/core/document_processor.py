@@ -615,6 +615,45 @@ class DocumentProcessor:
 
         return text
 
+    def extract_text_fast(
+        self,
+        file_path: Union[str, Path],
+        file_extension: Optional[str] = None,
+    ) -> str:
+        """
+        Fast text-only extraction for pre-scan use cases.
+
+        Skips images, tables, OCR, metadata extraction, complexity analysis, etc.
+        Intended for "is there any text-based PII / forbidden word in this file?"
+        rather than full chunking. Roughly 10-50x faster than ``extract_text`` for
+        complex PDF / DOCX / PPTX.
+
+        Args:
+            file_path: File path
+            file_extension: File extension (auto-detected from file_path if None)
+
+        Returns:
+            Plain text string (no image tags, no chart placeholders, no metadata header)
+        """
+        file_path_str = str(file_path)
+
+        if not os.path.exists(file_path_str):
+            raise FileNotFoundError(f"File not found: {file_path_str}")
+
+        if file_extension is None:
+            file_extension = os.path.splitext(file_path_str)[1].lstrip('.')
+
+        ext = file_extension.lower().lstrip('.')
+
+        if not self.is_supported(ext):
+            raise ValueError(f"Unsupported file format: {ext}")
+
+        self._logger.info(f"[fast] Extracting plain text from: {file_path_str} (ext={ext})")
+
+        current_file = self._create_current_file(file_path_str, ext)
+        handler = self._get_handler(ext)
+        return handler.extract_text_fast(current_file)
+
     # =========================================================================
     # Public Methods - Text Chunking
     # =========================================================================
