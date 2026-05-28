@@ -36,7 +36,13 @@ Classes:
 """
 
 from xgen_doc2chunk.ocr.base import BaseOCR
-from xgen_doc2chunk.ocr.ocr_engine import OpenAIOCR, AnthropicOCR, GeminiOCR, VllmOCR
+from xgen_doc2chunk.ocr.ocr_engine import (
+    OpenAIOCR,
+    AnthropicOCR,
+    GeminiOCR,
+    VllmOCR,
+    DeepSeekOCR,
+)
 from xgen_doc2chunk.ocr.ocr_processor import (
     IMAGE_TAG_PATTERN,
     extract_image_tags,
@@ -56,6 +62,7 @@ __all__ = [
     "AnthropicOCR",
     "GeminiOCR",
     "VllmOCR",
+    "DeepSeekOCR",
     # Functions
     "IMAGE_TAG_PATTERN",
     "extract_image_tags",
