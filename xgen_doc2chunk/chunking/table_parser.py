@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
-from xgen_doc2chunk.chunking.constants import ParsedTable, TableRow
+from xgen_doc2chunk.chunking.constants import ParsedTable, TableRow, SpanningCell
 
 logger = logging.getLogger("document-processor")
 
@@ -149,6 +149,52 @@ def extract_cell_spans_with_positions(row_html: str) -> Dict[int, int]:
         current_col += colspan
 
     return spans
+
+
+def extract_spanning_cells(row_html: str) -> Dict[int, SpanningCell]:
+    """
+    Extract cells with rowspan > 1 from a row, including their content.
+
+    Column positions are computed with the same colspan-aware rule as
+    extract_cell_spans_with_positions, so both functions agree on positions.
+
+    Args:
+        row_html: Row HTML
+
+    Returns:
+        {column_position: SpanningCell} dictionary (only cells with rowspan > 1)
+    """
+    cells: Dict[int, SpanningCell] = {}
+    cell_pattern = r'<(th|td)([^>]*)>(.*?)</\1>'
+
+    current_col = 0
+    for match in re.finditer(cell_pattern, row_html, re.DOTALL | re.IGNORECASE):
+        tag = match.group(1).lower()
+        attrs = match.group(2)
+        content = match.group(3)
+
+        rowspan_match = re.search(r'rowspan=["\']?(\d+)["\']?', attrs, re.IGNORECASE)
+        rowspan = int(rowspan_match.group(1)) if rowspan_match else 1
+
+        colspan_match = re.search(r'colspan=["\']?(\d+)["\']?', attrs, re.IGNORECASE)
+        colspan = int(colspan_match.group(1)) if colspan_match else 1
+
+        if rowspan > 1:
+            attrs_without_rowspan = re.sub(
+                r'\s*rowspan=["\']?\d+["\']?', '', attrs, flags=re.IGNORECASE
+            ).strip()
+            cells[current_col] = SpanningCell(
+                col=current_col,
+                rowspan=rowspan,
+                colspan=colspan,
+                tag=tag,
+                attrs=attrs_without_rowspan,
+                content=content,
+            )
+
+        current_col += colspan
+
+    return cells
 
 
 def has_complex_spans(table_html: str) -> bool:

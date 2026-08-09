@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-08-09
+
+### Fixed
+- **Chunking**: Rowspan blocks larger than the chunk limit produced a single
+  oversized chunk that exceeded embedding model input limits. With
+  `force_chunking` enabled, such blocks are now split at row boundaries
+  (rows are never cut) and the spanning merged cells are re-issued into each
+  continuation chunk with adjusted rowspan, so every chunk remains a
+  self-contained, structurally valid table.
+- **Chunking**: `force_chunking` was silently ignored for table-based files
+  (CSV/TSV/XLSX/XLS); it is now propagated to the table chunking path.
+  Default behavior (`force_chunking=False`) is unchanged.
+
+### Added
+- **Chunking**: `SpanningCell` dataclass and `extract_spanning_cells()` helper
+  for rowspan-aware cell extraction with content.
+
 ## [0.2.26] - 2026-04-03
 
 ### Added

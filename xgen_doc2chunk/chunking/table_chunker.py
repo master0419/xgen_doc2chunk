@@ -12,15 +12,16 @@ Main Features:
 """
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from xgen_doc2chunk.chunking.constants import (
-    ParsedTable, TableRow, ParsedMarkdownTable,
+    ParsedTable, TableRow, ParsedMarkdownTable, SpanningCell,
     TABLE_WRAPPER_OVERHEAD, CHUNK_INDEX_OVERHEAD,
     MARKDOWN_TABLE_SEPARATOR_PATTERN
 )
 from xgen_doc2chunk.chunking.table_parser import (
-    parse_html_table, extract_cell_spans_with_positions, has_complex_spans
+    parse_html_table, extract_cell_spans_with_positions, has_complex_spans,
+    extract_spanning_cells
 )
 
 logger = logging.getLogger("document-processor")
@@ -300,11 +301,190 @@ def split_table_into_chunks(
     return chunks
 
 
+def _compute_carried_cells(
+    data_rows: List[TableRow]
+) -> List[Dict[int, Tuple[SpanningCell, int]]]:
+    """
+    For each row, snapshot the spanning cells that cover the row but physically
+    live in an earlier row (i.e., cells that would be lost if a chunk started here).
+
+    Uses the same decrement/update rules as the block identification loop in
+    split_table_preserving_rowspan so both stay consistent.
+
+    Args:
+        data_rows: Table data rows
+
+    Returns:
+        Per-row dict {column_position: (SpanningCell, remaining_rows)} where
+        remaining_rows includes the current row.
+    """
+    carried_per_row: List[Dict[int, Tuple[SpanningCell, int]]] = []
+    active: Dict[int, Tuple[SpanningCell, int]] = {}  # col -> (cell, remaining including current row)
+
+    for row_idx, row in enumerate(data_rows):
+        # Decrease remaining rowspan from previous row (except first row)
+        if row_idx > 0:
+            finished_cols = []
+            for col in list(active.keys()):
+                cell, remaining = active[col]
+                remaining -= 1
+                if remaining <= 0:
+                    finished_cols.append(col)
+                else:
+                    active[col] = (cell, remaining)
+            for col in finished_cols:
+                del active[col]
+
+        # Snapshot BEFORE adding this row's own spans:
+        # exactly the cells that started earlier and still cover this row
+        carried_per_row.append(dict(active))
+
+        # Add new rowspans starting from current row (longer span takes priority)
+        new_cells = extract_spanning_cells(row.html)
+        for col, cell in new_cells.items():
+            if col not in active or cell.rowspan > active[col][1]:
+                active[col] = (cell, cell.rowspan)
+
+    return carried_per_row
+
+
+def reissue_carried_cells(
+    row_html: str,
+    carried: Dict[int, Tuple[SpanningCell, int]]
+) -> str:
+    """
+    Re-issue carried spanning cells into a row that starts a continuation chunk.
+
+    Inserts each carried cell at its column position with rowspan set to its
+    remaining coverage (build_table_chunk clamps it to the chunk's row count).
+
+    Args:
+        row_html: Row HTML (first row of a continuation chunk)
+        carried: {column_position: (SpanningCell, remaining_rows)}
+
+    Returns:
+        Row HTML with carried cells inserted
+    """
+    if not carried:
+        return row_html
+
+    tr_match = re.match(r'\s*<tr[^>]*>(.*)</tr>\s*$', row_html, re.DOTALL | re.IGNORECASE)
+    inner = tr_match.group(1) if tr_match else row_html
+
+    cell_pattern = r'<(th|td)([^>]*)>(.*?)</\1>'
+    existing_cells = list(re.finditer(cell_pattern, inner, re.DOTALL | re.IGNORECASE))
+
+    def render(cell: SpanningCell, remaining: int) -> str:
+        attrs = f" rowspan='{remaining}'"
+        if cell.attrs:
+            attrs += f" {cell.attrs}"
+        return f"<{cell.tag}{attrs}>{cell.content}</{cell.tag}>"
+
+    pending = sorted(carried.items())  # by column position
+    parts: List[str] = []
+    pending_idx = 0
+    current_col = 0
+
+    for match in existing_cells:
+        # Insert carried cells occupying column slots before this existing cell
+        while pending_idx < len(pending) and pending[pending_idx][0] <= current_col:
+            _, (cell, remaining) = pending[pending_idx]
+            parts.append(render(cell, remaining))
+            current_col += cell.colspan
+            pending_idx += 1
+
+        parts.append(match.group(0))
+        colspan_match = re.search(r'colspan=["\']?(\d+)["\']?', match.group(2), re.IGNORECASE)
+        current_col += int(colspan_match.group(1)) if colspan_match else 1
+
+    # Carried cells positioned after all existing cells
+    while pending_idx < len(pending):
+        _, (cell, remaining) = pending[pending_idx]
+        parts.append(render(cell, remaining))
+        pending_idx += 1
+
+    return f"<tr>{''.join(parts)}</tr>"
+
+
+def split_oversized_block(
+    block_rows: List[TableRow],
+    block_carried: List[Dict[int, Tuple[SpanningCell, int]]],
+    header_html: str,
+    available_space: int,
+    max_chunk_data_size: int,
+    context_prefix: str,
+    start_chunk_index: int
+) -> List[str]:
+    """
+    Split a single rowspan block that exceeds max_chunk_data_size into
+    row-level sub-chunks. Rows are NEVER split internally.
+
+    Each sub-chunk that does not start at the block's first row gets the
+    active spanning cells re-issued into its first row, so every sub-chunk
+    remains a self-contained, structurally valid table.
+
+    Args:
+        block_rows: Rows of the oversized block
+        block_carried: Carried-cell snapshot for each row (aligned with block_rows)
+        header_html: Header HTML restored in every chunk
+        available_space: Target data size per chunk
+        max_chunk_data_size: Hard limit per chunk (chunk_size * 1.5 based)
+        context_prefix: Context info included in all chunks
+        start_chunk_index: Chunk index offset for metadata
+    Returns:
+        List of table chunk HTML strings
+    """
+    chunks: List[str] = []
+    current_rows: List[TableRow] = []
+    current_size = 0
+
+    for i, row in enumerate(block_rows):
+        row_size = row.char_length + 1  # Including newline
+
+        # Flush when the row no longer fits within the 1.5x limit
+        # (rows themselves are never split - a single oversized row
+        #  becomes its own chunk)
+        if current_rows and current_size + row_size > max_chunk_data_size:
+            chunks.append(build_table_chunk(
+                header_html, current_rows,
+                start_chunk_index + len(chunks),
+                start_chunk_index + len(chunks) + 2,
+                context_prefix=context_prefix
+            ))
+            current_rows = []
+            current_size = 0
+
+        # A sub-chunk starting mid-block loses the spanning cells that live in
+        # earlier rows - re-issue them into its first row
+        if not current_rows and i > 0 and block_carried[i]:
+            new_html = reissue_carried_cells(row.html, block_carried[i])
+            row = TableRow(
+                html=new_html,
+                is_header=row.is_header,
+                cell_count=row.cell_count + len(block_carried[i]),
+                char_length=len(new_html)
+            )
+
+        current_rows.append(row)
+        current_size += row.char_length + 1
+
+    if current_rows:
+        chunks.append(build_table_chunk(
+            header_html, current_rows,
+            start_chunk_index + len(chunks),
+            start_chunk_index + len(chunks) + 2,
+            context_prefix=context_prefix
+        ))
+
+    return chunks
+
+
 def split_table_preserving_rowspan(
     parsed_table: ParsedTable,
     chunk_size: int,
     chunk_overlap: int,
-    context_prefix: str = ""
+    context_prefix: str = "",
+    force_chunking: bool = False
 ) -> List[str]:
     """
     Split a table considering rowspan.
@@ -318,12 +498,17 @@ def split_table_preserving_rowspan(
     1. Track active rowspan for each row (by column position, considering colspan)
     2. If all rowspans from previous row end and new rowspan starts, create new block
     3. Combine blocks to fit chunk_size
+    4. (force_chunking only) A block exceeding the 1.5x limit is split internally
+       at row boundaries, with carried spanning cells re-issued in each sub-chunk
 
     Args:
         parsed_table: Parsed table
         chunk_size: Chunk size
         chunk_overlap: Not used (kept for compatibility)
         context_prefix: Context info (metadata, sheet info, etc.)
+        force_chunking: Allow splitting inside oversized rowspan blocks.
+            False (default) keeps the previous behavior: blocks are never
+            split internally, regardless of size.
 
     Returns:
         List of split table chunks
@@ -408,9 +593,31 @@ def split_table_preserving_rowspan(
     # Maximum allowed chunk size (1.5x of chunk_size)
     max_chunk_data_size = int(chunk_size * 1.5) - header_size - context_size - CHUNK_INDEX_OVERHEAD
 
+    # Carried-cell snapshots are only needed when oversized blocks may be split
+    carried_per_row = _compute_carried_cells(data_rows) if force_chunking else None
+
     for group in row_groups:
         group_rows = [data_rows[idx] for idx in group]
         group_size = sum(row.char_length + 1 for row in group_rows)
+
+        if force_chunking and group_size > max_chunk_data_size:
+            # Oversized rowspan block: cannot fit in a single chunk.
+            # Flush the current chunk, then split the block internally at row
+            # boundaries with carried spanning cells re-issued (rows stay intact).
+            if current_rows:
+                chunks.append(build_table_chunk(
+                    header_html, current_rows, len(chunks), len(chunks) + 2,
+                    context_prefix=context_prefix
+                ))
+                current_rows = []
+                current_size = 0
+
+            block_carried = [carried_per_row[idx] for idx in group]
+            chunks.extend(split_oversized_block(
+                group_rows, block_carried, header_html,
+                available_space, max_chunk_data_size, context_prefix, len(chunks)
+            ))
+            continue
 
         if current_rows and current_size + group_size > available_space:
             # Check if we can still fit within 1.5x limit
@@ -448,7 +655,8 @@ def chunk_large_table(
     table_html: str,
     chunk_size: int,
     chunk_overlap: int,
-    context_prefix: str = ""
+    context_prefix: str = "",
+    force_chunking: bool = False
 ) -> List[str]:
     """
     Split large HTML table to fit chunk_size.
@@ -464,6 +672,10 @@ def chunk_large_table(
         chunk_size: Maximum chunk size
         chunk_overlap: Not used (kept for compatibility)
         context_prefix: Context info (metadata, sheet info, etc.) - included in all chunks
+        force_chunking: Allow splitting inside oversized rowspan blocks
+            (blocks whose rows are tied together by merged cells). Carried
+            spanning cells are re-issued so each chunk stays self-contained.
+            False (default) keeps the previous behavior.
 
     Returns:
         List of split table HTML chunks
@@ -492,7 +704,10 @@ def chunk_large_table(
     # Check for complex spans (rowspan)
     if has_complex_spans(table_html):
         logger.info("Complex table with rowspan detected, using span-aware splitting")
-        return split_table_preserving_rowspan(parsed, chunk_size, chunk_overlap, context_prefix)
+        return split_table_preserving_rowspan(
+            parsed, chunk_size, chunk_overlap, context_prefix,
+            force_chunking=force_chunking
+        )
 
     # Standard table splitting
     chunks = split_table_into_chunks(parsed, chunk_size, chunk_overlap, context_prefix)

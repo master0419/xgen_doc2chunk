@@ -28,6 +28,7 @@ Refactoring:
 - This file maintains only the public API and integration logic
 """
 import bisect
+import functools
 import logging
 import re
 from typing import Any, Dict, List, Optional, Union
@@ -327,12 +328,13 @@ def _split_table_based_content(
     page_tag_processor: Optional[Any] = None,
     image_processor: Optional[Any] = None,
     chart_processor: Optional[Any] = None,
-    metadata_formatter: Optional[Any] = None
+    metadata_formatter: Optional[Any] = None,
+    force_chunking: bool = False
 ) -> List[str]:
     """
     Chunk table-based content (CSV/TSV/Excel).
 
-    Split large tables (HTML or Markdown) to fit chunk_size and restore 
+    Split large tables (HTML or Markdown) to fit chunk_size and restore
     table structure in each chunk.
 
     For multi-sheet Excel files, process each sheet separately.
@@ -348,12 +350,19 @@ def _split_table_based_content(
         image_processor: ImageProcessor for image tag patterns
         chart_processor: ChartProcessor for chart block patterns
         metadata_formatter: MetadataFormatter for metadata block patterns
+        force_chunking: Allow splitting inside oversized rowspan blocks
+            (rows tied together by merged cells). False (default) keeps
+            the previous behavior where such blocks are never split.
 
     Returns:
         List of chunks
     """
     if not text or not text.strip():
         return [""]
+
+    # Bind force_chunking so the table chunking policy reaches
+    # chunk_large_table through the sheet processor callbacks
+    chunk_table_func = functools.partial(_chunk_table_unified, force_chunking=force_chunking)
 
     # Get metadata pattern from processor
     metadata_pattern = _get_metadata_block_pattern(metadata_formatter)
@@ -388,7 +397,7 @@ def _split_table_based_content(
         # Pass 0 for overlap since tables should not have overlap
         return chunk_multi_sheet_content(
             sheets, metadata_block, analysis_block, chunk_size, 0,
-            _chunk_plain_text, _chunk_table_unified,
+            _chunk_plain_text, chunk_table_func,
             image_pattern=image_pattern,
             chart_pattern=chart_pattern,
             metadata_pattern=metadata_pattern
@@ -398,32 +407,40 @@ def _split_table_based_content(
     # Pass 0 for overlap since tables should not have overlap
     return chunk_single_table_content(
         text_without_analysis, metadata_block, analysis_block, chunk_size, 0,
-        _chunk_plain_text, _chunk_table_unified,
+        _chunk_plain_text, chunk_table_func,
         image_pattern=image_pattern,
         chart_pattern=chart_pattern,
         metadata_pattern=metadata_pattern
     )
 
 
-def _chunk_table_unified(table_text: str, chunk_size: int, chunk_overlap: int, context_prefix: str = "") -> List[str]:
+def _chunk_table_unified(
+    table_text: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    context_prefix: str = "",
+    force_chunking: bool = False
+) -> List[str]:
     """
     Unified table chunking function that handles both HTML and Markdown tables.
-    
+
     Detects table type and applies appropriate chunking with NO overlap.
-    
+
     Args:
         table_text: Table content (HTML or Markdown)
         chunk_size: Maximum chunk size
         chunk_overlap: Ignored (tables have no overlap)
         context_prefix: Context to prepend to each chunk
-        
+        force_chunking: Allow splitting inside oversized rowspan blocks
+            (HTML tables only - Markdown tables have no rowspan)
+
     Returns:
         List of table chunks
     """
     if _is_markdown_table(table_text):
         return _chunk_large_markdown_table(table_text, chunk_size, 0, context_prefix)
     else:
-        return _chunk_large_table(table_text, chunk_size, 0, context_prefix)
+        return _chunk_large_table(table_text, chunk_size, 0, context_prefix, force_chunking=force_chunking)
 
 
 def _split_text(
@@ -489,7 +506,8 @@ def _split_text(
             page_tag_processor=page_tag_processor,
             image_processor=image_processor,
             chart_processor=chart_processor,
-            metadata_formatter=metadata_formatter
+            metadata_formatter=metadata_formatter,
+            force_chunking=force_chunking
         )
 
     # Get tag patterns from processors or use defaults (needed for metadata extraction)
