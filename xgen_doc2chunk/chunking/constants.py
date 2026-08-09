@@ -123,6 +123,21 @@ class ParsedTable:
 
 
 @dataclass
+class SpanningCell:
+    """Cell spanning multiple rows (rowspan > 1) in an HTML table.
+
+    Captures everything needed to re-issue the cell at the top of a
+    continuation chunk when a rowspan block is split across chunks.
+    """
+    col: int          # Column position (colspan-aware)
+    rowspan: int      # Original rowspan value
+    colspan: int      # Colspan value (1 if absent)
+    tag: str          # 'td' or 'th'
+    attrs: str        # Attributes string with rowspan removed (colspan etc. preserved)
+    content: str      # Inner HTML content of the cell
+
+
+@dataclass
 class ParsedMarkdownTable:
     """Parsed Markdown table information"""
     header_row: str              # Header row (first row with column names)
