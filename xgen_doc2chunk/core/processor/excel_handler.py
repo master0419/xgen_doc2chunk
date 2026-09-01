@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from xgen_doc2chunk.core.processor.base_handler import BaseHandler
 from xgen_doc2chunk.core.functions.img_processor import ImageProcessor
@@ -38,6 +38,8 @@ from xgen_doc2chunk.core.processor.excel_helper import (
     # Object Detection
     convert_xlsx_objects_to_tables,
     convert_xls_objects_to_tables,
+    convert_xlsx_objects_to_blocks,
+    convert_xls_objects_to_blocks,
 )
 from xgen_doc2chunk.core.processor.excel_helper.excel_metadata import (
     XLSXMetadataExtractor,
@@ -284,14 +286,10 @@ class ExcelHandler(BaseHandler):
                 sheet_tag = self.create_sheet_tag(ws.name)
                 result_parts.append(f"\n{sheet_tag}\n")
 
-                # Process tables for this sheet
-                table_contents = convert_xls_objects_to_tables(ws, wb)
-                if table_contents:
-                    for i, table_content in enumerate(table_contents, 1):
-                        if len(table_contents) > 1:
-                            result_parts.append(f"\n[Table {i}]\n{table_content}\n")
-                        else:
-                            result_parts.append(f"\n{table_content}\n")
+                # Process tables/text blocks for this sheet
+                result_parts.extend(
+                    self._format_blocks(convert_xls_objects_to_blocks(ws, wb))
+                )
 
                 # Process images for this sheet
                 sheet_images = images_by_sheet.get(sheet_idx, [])
@@ -627,6 +625,39 @@ class ExcelHandler(BaseHandler):
 
         return result
 
+    @staticmethod
+    def _format_blocks(blocks: List[Tuple[str, str]]) -> List[str]:
+        """
+        감지된 블록 목록을 출력 문자열 조각으로 변환합니다.
+
+        - 'table' 블록: 표가 2개 이상일 때만 [Table N] 마커를 붙입니다.
+          (기존 동작 유지 - 표가 하나뿐이면 마커 없이 표만 출력)
+          번호는 실제 표에만 순차 부여되므로 텍스트 블록이 섞여도 어긋나지 않습니다.
+        - 'text' 블록: 마커 없이 본문만 출력합니다. 표 마커가 없으므로 청킹 단계에서
+          앞뒤 텍스트와 하나의 텍스트 세그먼트로 묶입니다.
+
+        Args:
+            blocks: convert_*_objects_to_blocks 가 반환한 [(종류, 내용), ...]
+
+        Returns:
+            result_parts 에 이어 붙일 문자열 목록
+        """
+        parts: List[str] = []
+        table_total = sum(1 for kind, _ in blocks if kind == 'table')
+        table_idx = 0
+
+        for kind, content in blocks:
+            if kind == 'table':
+                table_idx += 1
+                if table_total > 1:
+                    parts.append(f"\n[Table {table_idx}]\n{content}\n")
+                else:
+                    parts.append(f"\n{content}\n")
+            else:
+                parts.append(f"\n{content}\n")
+
+        return parts
+
     def _process_xlsx_sheet(
         self, ws, sheet_name: str, preload: Dict[str, Any],
         processed_images: Set[str], stats: Dict[str, int]
@@ -635,13 +666,7 @@ class ExcelHandler(BaseHandler):
         sheet_tag = self.create_sheet_tag(sheet_name)
         parts = [f"\n{sheet_tag}\n"]
 
-        table_contents = convert_xlsx_objects_to_tables(ws)
-        if table_contents:
-            for i, table_content in enumerate(table_contents, 1):
-                if len(table_contents) > 1:
-                    parts.append(f"\n[Table {i}]\n{table_content}\n")
-                else:
-                    parts.append(f"\n{table_content}\n")
+        parts.extend(self._format_blocks(convert_xlsx_objects_to_blocks(ws)))
 
         # Chart processing using ChartExtractor
         if hasattr(ws, '_charts') and ws._charts:

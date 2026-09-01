@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-09-01
+
+### Fixed
+- **Excel**: A single cell (or a single-row / single-column block) was detected as a
+  table, so one stray value occupied an entire chunk. Blocks smaller than 2x2 are now
+  emitted as plain text, matching the minimum table size DOCX/HWPX/PDF already enforce.
+  No values are dropped - a small block keeps its cell values as text.
+- **Chunking**: `chunk_multi_sheet_content()` emitted one chunk per segment regardless
+  of size, so `chunk_size` acted only as an upper bound and never as a fill target.
+  Segments that fit are now packed into a shared chunk. Occupancy is measured on
+  segment bodies, because the context prefix (metadata + sheet marker) is written once
+  per chunk rather than once per segment. Oversized segments keep their previous
+  handling, and the buffer is always flushed at a sheet boundary so segments from
+  different sheets are never merged.
+- **Chunking**: Long plain-text segments in multi-sheet content exceeded `chunk_size`
+  by the context prefix length - the full `chunk_size` was passed to the text splitter
+  before the prefix was prepended to every resulting chunk.
+- **Chunking**: `extract_content_segments()` raised `NameError` when called with the
+  default image pattern (`IMAGE_TAG_PATTERN` was referenced but never imported).
+
+### Added
+- **Excel**: `convert_xlsx_objects_to_blocks()` / `convert_xls_objects_to_blocks()`
+  classify each detected object as `table` or `text`.
+- **Excel**: `convert_xlsx_object_to_text()` / `convert_xls_object_to_text()` render a
+  block smaller than the minimum table size as plain text.
+- **Excel**: `LayoutRange.is_table_like()` plus `MIN_TABLE_ROWS` / `MIN_TABLE_COLS`
+  constants in `excel_layout_detector`.
+
+### Compatibility
+- `convert_xlsx_objects_to_tables()` / `convert_xls_objects_to_tables()` keep their
+  previous behavior (every detected object becomes a table) and remain exported.
+- Non-Excel formats (PDF/DOCX/DOC/HWP/HWPX/PPTX) are unaffected; extraction and
+  chunking output is byte-identical to 0.3.4.
+
 ## [0.3.4] - 2026-08-09
 
 ### Fixed

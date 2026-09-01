@@ -17,9 +17,14 @@ from xgen_doc2chunk.chunking.constants import (
     HTML_TABLE_PATTERN,
     MARKDOWN_TABLE_PATTERN,
     CHART_BLOCK_PATTERN,
+    IMAGE_TAG_PATTERN,
 )
 
 logger = logging.getLogger("document-processor")
+
+# Separator inserted between segments packed into the same chunk.
+# A single buffered segment produces the exact same output as before packing.
+SEGMENT_JOINER = "\n\n"
 
 
 def extract_document_metadata(
@@ -206,6 +211,16 @@ def chunk_multi_sheet_content(
     All chunks include metadata and sheet information.
     Handles not only tables but also additional content before/after tables (textbox, chart, image, etc.).
 
+    Segment packing:
+        Segments that fit within chunk_size are buffered and emitted together so a
+        chunk is actually filled instead of holding a single tiny segment. Buffer
+        occupancy is measured on segment bodies only, because the context prefix
+        (metadata + sheet marker) is written once per chunk rather than once per
+        segment. Oversized segments keep their previous handling: the buffer is
+        flushed first, then the segment is split (or kept intact for charts).
+        The buffer is always flushed at a sheet boundary, so segments from
+        different sheets are never merged.
+
     Args:
         sheets: [(sheet_name, sheet_content), ...] list
         metadata_block: Metadata block
@@ -260,19 +275,48 @@ def chunk_multi_sheet_content(
             # Skip empty sheets
             continue
 
+        # === Segment packing ===
+        # Small segments are buffered and emitted together so that chunk_size is
+        # actually filled. Sizes are measured on segment BODIES only - the context
+        # prefix is counted once per chunk, not once per segment.
+        prefix_size = len(context_prefix)
+        body_budget = chunk_size - prefix_size
+        buffer: List[str] = []
+        buffer_size = 0
+
+        def flush_buffer() -> None:
+            """Emit buffered segments as one chunk."""
+            nonlocal buffer, buffer_size
+            if buffer:
+                all_chunks.append(f"{context_prefix}\n" + SEGMENT_JOINER.join(buffer))
+                buffer = []
+                buffer_size = 0
+
+        def add_to_buffer(content: str, size: int) -> None:
+            """Append a segment, flushing first if it would overflow the budget."""
+            nonlocal buffer, buffer_size
+            separator = len(SEGMENT_JOINER) if buffer else 0
+            if buffer and buffer_size + separator + size > body_budget:
+                flush_buffer()
+                separator = 0
+            buffer.append(content)
+            buffer_size += separator + size
+
         # Process each segment
         for segment_type, segment_content in segments:
             if not segment_content.strip():
                 continue
 
             segment_size = len(segment_content)
+            fits_in_chunk = segment_size + prefix_size <= chunk_size
 
             if segment_type == 'table':
                 # Table processing - NO overlap for tables
-                if segment_size + len(context_prefix) <= chunk_size:
-                    all_chunks.append(f"{context_prefix}\n{segment_content}")
+                if fits_in_chunk:
+                    add_to_buffer(segment_content, segment_size)
                 else:
                     # Large table: split with NO overlap (0 is passed, not chunk_overlap)
+                    flush_buffer()
                     table_chunks = chunk_large_table_func(
                         segment_content, chunk_size, 0,  # NO overlap for tables
                         context_prefix=context_prefix
@@ -280,21 +324,34 @@ def chunk_multi_sheet_content(
                     all_chunks.extend(table_chunks)
 
             elif segment_type == 'chart':
-                # Protected blocks: never split, keep as single chunk
-                if len(context_prefix) + segment_size > chunk_size:
+                # Protected blocks: never split, keep intact
+                if fits_in_chunk:
+                    add_to_buffer(segment_content, segment_size)
+                else:
                     # Exceeds chunk size but keep intact (protected block)
                     logger.warning(f"{segment_type} block exceeds chunk_size, but keeping it intact")
-                all_chunks.append(f"{context_prefix}\n{segment_content}")
+                    flush_buffer()
+                    all_chunks.append(f"{context_prefix}\n{segment_content}")
 
             else:
                 # Plain text
-                if len(context_prefix) + segment_size <= chunk_size:
-                    all_chunks.append(f"{context_prefix}\n{segment_content}")
+                if fits_in_chunk:
+                    add_to_buffer(segment_content, segment_size)
                 else:
-                    # Split long plain text
-                    text_chunks = chunk_plain_text_func(segment_content, chunk_size, chunk_overlap)
+                    # Split long plain text.
+                    # Reserve room for the context prefix that is prepended to every
+                    # chunk - passing the full chunk_size here would make each chunk
+                    # overshoot by the prefix length.
+                    flush_buffer()
+                    text_chunk_size = body_budget if body_budget > 0 else chunk_size
+                    text_chunks = chunk_plain_text_func(
+                        segment_content, text_chunk_size, chunk_overlap
+                    )
                     for chunk in text_chunks:
                         all_chunks.append(f"{context_prefix}\n{chunk}")
+
+        # Never merge across sheet boundaries - the context prefix differs per sheet
+        flush_buffer()
 
     logger.info(f"Multi-sheet content split into {len(all_chunks)} chunks")
 

@@ -51,6 +51,8 @@ from xgen_doc2chunk.core.processor.excel_helper.excel_table_xlsx import (
     convert_xlsx_sheet_to_markdown,
     convert_xlsx_sheet_to_html,
     convert_xlsx_objects_to_tables,
+    convert_xlsx_objects_to_blocks,
+    convert_xlsx_object_to_text,
 )
 
 # === Table XLS ===
@@ -60,6 +62,8 @@ from xgen_doc2chunk.core.processor.excel_helper.excel_table_xls import (
     convert_xls_sheet_to_markdown,
     convert_xls_sheet_to_html,
     convert_xls_objects_to_tables,
+    convert_xls_objects_to_blocks,
+    convert_xls_object_to_text,
 )
 
 # === Layout Detector ===
@@ -69,6 +73,8 @@ from xgen_doc2chunk.core.processor.excel_helper.excel_layout_detector import (
     object_detect_xlsx,
     object_detect_xls,
     LayoutRange,
+    MIN_TABLE_ROWS,
+    MIN_TABLE_COLS,
 )
 
 
@@ -93,16 +99,22 @@ __all__ = [
     'convert_xlsx_sheet_to_markdown',
     'convert_xlsx_sheet_to_html',
     'convert_xlsx_objects_to_tables',
+    'convert_xlsx_objects_to_blocks',
+    'convert_xlsx_object_to_text',
     # Table XLS
     'has_merged_cells_xls',
     'convert_xls_sheet_to_table',
     'convert_xls_sheet_to_markdown',
     'convert_xls_sheet_to_html',
     'convert_xls_objects_to_tables',
+    'convert_xls_objects_to_blocks',
+    'convert_xls_object_to_text',
     # Layout Detector
     'layout_detect_range_xlsx',
     'layout_detect_range_xls',
     'object_detect_xlsx',
     'object_detect_xls',
     'LayoutRange',
+    'MIN_TABLE_ROWS',
+    'MIN_TABLE_COLS',
 ]
