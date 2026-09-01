@@ -15,6 +15,13 @@ from collections import deque
 
 logger = logging.getLogger("document-processor")
 
+# 표로 인정할 최소 크기.
+# DOCX/HWPX 의 TableExtractorConfig(min_rows=2, min_cols=2) 및
+# PDF 의 PDFConfig.MIN_TABLE_ROWS/COLS 와 동일한 기준을 사용한다.
+# 이보다 작은 블록(1x1, 1xN, Nx1)은 표가 아니라 일반 텍스트로 취급한다.
+MIN_TABLE_ROWS = 2
+MIN_TABLE_COLS = 2
+
 
 @dataclass
 class LayoutRange:
@@ -42,7 +49,21 @@ class LayoutRange:
     def cell_count(self) -> int:
         """셀 개수"""
         return self.row_count() * self.col_count()
-    
+
+    def is_table_like(
+        self,
+        min_rows: int = MIN_TABLE_ROWS,
+        min_cols: int = MIN_TABLE_COLS
+    ) -> bool:
+        """
+        표로 인정할 최소 크기를 만족하는지 확인합니다.
+
+        행/열이 모두 기준 이상이어야 표로 봅니다.
+        1x1(단일 셀), 1xN(한 행), Nx1(한 열)은 격자 구조가 없으므로 False.
+        """
+        return self.row_count() >= min_rows and self.col_count() >= min_cols
+
+
     def is_adjacent(self, other: 'LayoutRange') -> bool:
         """다른 LayoutRange와 완전히 인접해 있는지 확인 (변이 맞닿아 있음)"""
         # 수평으로 인접 (같은 행 범위에서 열이 맞닿음)

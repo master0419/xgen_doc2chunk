@@ -8,10 +8,12 @@ object_detect를 통해 개별 객체(테이블)별로 청킹할 수 있습니�
 """
 
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple
 import xlrd
 
 from xgen_doc2chunk.core.processor.excel_helper.excel_layout_detector import layout_detect_range_xls, object_detect_xls, LayoutRange
+# 표 문자열 유효성 검사는 XLSX 모듈과 동일한 규칙을 사용한다
+from xgen_doc2chunk.core.processor.excel_helper.excel_table_xlsx import _table_has_data
 
 logger = logging.getLogger("document-processor")
 
@@ -353,10 +355,163 @@ def _escape_html(text: str) -> str:
     return text
 
 
+def _build_merged_value_override_xls(sheet, wb, layout: LayoutRange) -> Dict[Tuple[int, int], str]:
+    """
+    병합 셀의 시작점이 layout 밖에 있는 경우, layout 내 첫 번째 셀에 표시할 값을 계산합니다.
+
+    layout 을 개별 객체 단위로 잘라서 변환할 때, 객체 경계를 가로지르는 병합 셀의
+    값이 누락되는 것을 막기 위해 사용합니다.
+
+    Args:
+        sheet: xlrd Sheet 객체
+        wb: xlrd Workbook 객체
+        layout: 변환할 레이아웃 범위 (1-based)
+
+    Returns:
+        {(row, col): value} 매핑 (0-based 좌표)
+    """
+    merged_value_override: Dict[Tuple[int, int], str] = {}
+
+    try:
+        merged_ranges = sheet.merged_cells
+    except Exception:
+        return merged_value_override
+
+    for (rlo, rhi, clo, chi) in merged_ranges:
+        # xlrd: rlo/clo 는 0-based inclusive, rhi/chi 는 exclusive
+        # layout 은 1-based 이므로 비교를 위해 1-based 로 변환
+        mr_min_row, mr_max_row = rlo + 1, rhi
+        mr_min_col, mr_max_col = clo + 1, chi
+
+        if not (mr_min_row <= layout.max_row and
+                mr_max_row >= layout.min_row and
+                mr_min_col <= layout.max_col and
+                mr_max_col >= layout.min_col):
+            continue
+
+        # 병합 시작점이 layout 안에 있으면 일반 경로에서 값을 읽으므로 override 불필요
+        start_in_layout = (rlo >= layout.min_row - 1 and clo >= layout.min_col - 1)
+        if start_in_layout:
+            continue
+
+        first_row_in_layout = max(rlo, layout.min_row - 1)
+        first_col_in_layout = max(clo, layout.min_col - 1)
+
+        try:
+            orig_value = sheet.cell_value(rlo, clo)
+            if orig_value:
+                orig_type = sheet.cell_type(rlo, clo)
+                merged_value_override[(first_row_in_layout, first_col_in_layout)] = \
+                    _format_xls_cell_value(orig_value, orig_type, wb)
+        except Exception:
+            pass
+
+    return merged_value_override
+
+
+def convert_xls_object_to_text(sheet, wb, layout: LayoutRange) -> str:
+    """
+    표로 보기 어려운 작은 객체(1x1, 1xN, Nx1)를 일반 텍스트로 변환합니다.
+
+    표 문법(파이프/구분선)을 붙이지 않고 셀 값만 남깁니다.
+    한 행에 값이 여러 개면 " | " 로 이어 붙이고, 행 사이는 줄바꿈으로 구분합니다.
+
+    Args:
+        sheet: xlrd Sheet 객체
+        wb: xlrd Workbook 객체
+        layout: 변환할 객체 범위 (1-based)
+
+    Returns:
+        텍스트 문자열 (값이 없으면 빈 문자열)
+    """
+    try:
+        merged_value_override = _build_merged_value_override_xls(sheet, wb, layout)
+
+        lines: List[str] = []
+        # 1-based layout 을 0-based 로 변환하여 사용
+        for row_idx in range(layout.min_row - 1, layout.max_row):
+            values: List[str] = []
+            for col_idx in range(layout.min_col - 1, layout.max_col):
+                cell_value = ""
+                if (row_idx, col_idx) in merged_value_override:
+                    cell_value = merged_value_override[(row_idx, col_idx)]
+                else:
+                    try:
+                        value = sheet.cell_value(row_idx, col_idx)
+                        if value:
+                            cell_type = sheet.cell_type(row_idx, col_idx)
+                            cell_value = _format_xls_cell_value(value, cell_type, wb)
+                    except Exception:
+                        cell_value = ""
+
+                cell_value = cell_value.strip().replace("\n", " ") if cell_value else ""
+                if cell_value:
+                    values.append(cell_value)
+
+            if values:
+                lines.append(" | ".join(values))
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.warning(f"Error converting XLS object to text: {e}")
+        return ""
+
+
+def convert_xls_objects_to_blocks(
+    sheet,
+    wb,
+    layout: Optional[LayoutRange] = None
+) -> List[Tuple[str, str]]:
+    """
+    XLS 시트의 개별 객체를 표/텍스트로 분류하여 변환합니다.
+
+    object_detect_xls 로 감지한 각 객체에 대해 최소 크기(기본 2x2)를 검사하여,
+    기준을 만족하면 표('table')로, 그렇지 않으면 일반 텍스트('text')로 변환합니다.
+    DOCX/HWPX/PDF 가 사용하는 최소 표 크기 기준과 동일한 정책입니다.
+
+    작은 블록을 버리지 않고 텍스트로 흘려보내므로 값 손실은 없습니다.
+
+    Args:
+        sheet: xlrd Sheet 객체
+        wb: xlrd Workbook 객체
+        layout: 탐색할 레이아웃 범위 (None이면 자동 감지)
+
+    Returns:
+        [(종류, 내용), ...] 목록. 종류는 'table' 또는 'text'
+        (위→아래, 왼쪽→오른쪽 순서)
+    """
+    objects = object_detect_xls(sheet, wb, layout)
+
+    if not objects:
+        return []
+
+    blocks: List[Tuple[str, str]] = []
+    for obj_layout in objects:
+        if obj_layout.is_table_like():
+            table_str = convert_xls_sheet_to_table(sheet, wb, obj_layout)
+            if _table_has_data(table_str):
+                blocks.append(('table', table_str))
+        else:
+            text_str = convert_xls_object_to_text(sheet, wb, obj_layout)
+            if text_str and text_str.strip():
+                blocks.append(('text', text_str))
+
+    table_count = sum(1 for kind, _ in blocks if kind == 'table')
+    logger.debug(
+        f"Converted {len(objects)} objects to {table_count} tables and "
+        f"{len(blocks) - table_count} text blocks (XLS)"
+    )
+    return blocks
+
+
 def convert_xls_objects_to_tables(sheet, wb, layout: Optional[LayoutRange] = None) -> List[str]:
     """
     XLS 시트에서 개별 객체(테이블)를 감지하고 각각을 테이블 문자열로 변환합니다.
-    
+
+    NOTE: 최소 크기 검사 없이 모든 객체를 표로 변환합니다.
+          표/텍스트를 구분하려면 convert_xls_objects_to_blocks 를 사용하세요.
+
     알고리즘:
     1. 테두리가 있는 영역을 먼저 개별 개체로 인식
     2. 테두리가 없는 값 영역을 감지
@@ -379,20 +534,9 @@ def convert_xls_objects_to_tables(sheet, wb, layout: Optional[LayoutRange] = Non
     tables = []
     for obj_layout in objects:
         table_str = convert_xls_sheet_to_table(sheet, wb, obj_layout)
-        # 빈 테이블 필터링 (공백, 줄바꿈, 테이블 기호만 있는 경우 제외)
-        if table_str and table_str.strip():
-            # Markdown 테이블에서 실제 데이터가 있는지 확인
-            lines = [line.strip() for line in table_str.strip().split('\n') if line.strip()]
-            has_data = False
-            for line in lines:
-                if '---' not in line:
-                    parts = [p.strip() for p in line.split('|') if p.strip()]
-                    if parts:
-                        has_data = True
-                        break
-            
-            if has_data:
-                tables.append(table_str)
-    
+        # 빈 테이블 필터링 (구분선만 있고 값이 없는 경우 제외)
+        if _table_has_data(table_str):
+            tables.append(table_str)
+
     logger.debug(f"Converted {len(tables)} objects to tables (XLS)")
     return tables
